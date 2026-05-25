@@ -1,21 +1,35 @@
 import Foundation
 import Combine
 
+/// Per-million-token rates. `cacheWrite5m` and `cacheWrite1h` are billed
+/// differently — the 1h variant is 2x base input vs 1.25x for 5m. Cache
+/// reads are the same regardless of TTL.
 struct ModelPricing {
-    let input: Double      // $ / 1M tokens
+    let input: Double
     let output: Double
-    let cacheWrite: Double
+    let cacheWrite5m: Double
+    let cacheWrite1h: Double
     let cacheRead: Double
 
-    static func forModel(_ model: String) -> ModelPricing {
+    /// `bigContext` triggers Sonnet's >200k-token tier (2x rates). Opus and
+    /// Haiku don't have a 1M-context tier change — they keep the same rates.
+    static func forModel(_ model: String, bigContext: Bool) -> ModelPricing {
         let m = model.lowercased()
         if m.contains("opus") {
-            return .init(input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.50)
+            return .init(input: 15, output: 75,
+                         cacheWrite5m: 18.75, cacheWrite1h: 30, cacheRead: 1.50)
         }
         if m.contains("haiku") {
-            return .init(input: 1, output: 5, cacheWrite: 1.25, cacheRead: 0.10)
+            return .init(input: 1, output: 5,
+                         cacheWrite5m: 1.25, cacheWrite1h: 2, cacheRead: 0.10)
         }
-        return .init(input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.30)
+        // Sonnet — 1M tier doubles every rate.
+        if bigContext {
+            return .init(input: 6, output: 22.5,
+                         cacheWrite5m: 7.5, cacheWrite1h: 12, cacheRead: 0.60)
+        }
+        return .init(input: 3, output: 15,
+                     cacheWrite5m: 3.75, cacheWrite1h: 6, cacheRead: 0.30)
     }
 }
 
@@ -44,29 +58,43 @@ struct UsageSnapshot {
     var currentModel: String?
     var currentModelTraits: ModelTraits = .init()
 
+    /// Authoritative plan-budget figures from Anthropic's `/api/oauth/usage`
+    /// endpoint — the same data Claude Code's `/usage` slash command and
+    /// claude.ai's "Plan usage" panel display. `nil` while the first fetch
+    /// hasn't completed or when no OAuth token is available locally.
+    var planUsage: PlanUsage?
+    /// Reason the last plan fetch failed, if any — used to surface
+    /// "log in with `/login`" hints in the UI.
+    var planUsageError: PlanUsageFetcher.FetchError?
+
     var isWorking: Bool { workState == .working }
     var isAwaitingDecision: Bool { workState == .awaitingDecision }
     var hasActivity: Bool { workState != .idle }
 }
 
 /// Per-message usage entry kept in memory so we can re-window the 5h block
-/// without re-reading the file.
+/// and dedupe retries without re-reading the file.
+///
+/// Claude Code re-emits the same assistant message on session
+/// resume/edit/branch — empirically up to ~17x for a single (message.id,
+/// requestId) pair. Aggregating raw entries inflates tokens and cost ~2x,
+/// so every consumer must dedupe by `dedupKey`.
 private struct UsageEntry {
     let ts: Date
     let totalTokens: Int
     let cost: Double
+    /// `"\(message.id)|\(requestId)"`, or nil when either is missing.
+    let dedupKey: String?
 }
 
-/// Cached per-file state. Invalidated when (mtime, size) changes or when
-/// the day boundary moves.
+/// Cached per-file state. Invalidated when (mtime, size) changes.
+/// Holds all entries newer than `min(startOfToday, now - 10h)` so we can
+/// compute both today's totals and the rolling 5h block from a single list.
 private struct FileCache {
     var mtime: Date
     var size: UInt64
     var parsedToOffset: Int       // bytes already parsed from the start
-    var dayCaptured: Date         // start-of-day used for today's totals
-    var todayTokens: Int
-    var todayCost: Double
-    var recentEntries: [UsageEntry]   // all entries newer than (now - 6h) at last parse
+    var entries: [UsageEntry]     // chronological by `ts`
 }
 
 final class UsageMonitor: ObservableObject {
@@ -74,7 +102,13 @@ final class UsageMonitor: ObservableObject {
 
     private let projectsURL: URL
     private var timer: Timer?
+    private var planTimer: Timer?
+    private let planFetcher = PlanUsageFetcher()
+    private var planTask: Task<Void, Never>?
     private var fileCache: [URL: FileCache] = [:]
+    /// Cached result of `lastAssistantInfo` per file. Keyed on (size, mtime)
+    /// so we re-scan the 64KB tail only when the file actually grew.
+    private var tailCache: [URL: (size: UInt64, mtime: Date, info: LastAssistantInfo)] = [:]
     /// Serial queue prevents two `computeSnapshot` calls from racing on
     /// `fileCache` if a refresh runs long.
     private let refreshQueue = DispatchQueue(label: "CCIsland.refresh", qos: .utility)
@@ -103,15 +137,57 @@ final class UsageMonitor: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        // Plan-% rarely moves fast and the endpoint is rate-sensitive — 60s
+        // is plenty and matches what the web UI seems to poll at.
+        refreshPlanUsage()
+        planTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            self?.refreshPlanUsage()
+        }
     }
 
-    func stop() { timer?.invalidate(); timer = nil }
+    func stop() {
+        timer?.invalidate(); timer = nil
+        planTimer?.invalidate(); planTimer = nil
+        planTask?.cancel(); planTask = nil
+    }
+
+    private func refreshPlanUsage() {
+        planTask?.cancel()
+        planTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let usage = try await self.planFetcher.fetch()
+                await MainActor.run {
+                    self.snapshot.planUsage = usage
+                    self.snapshot.planUsageError = nil
+                }
+            } catch let err as PlanUsageFetcher.FetchError {
+                await MainActor.run {
+                    self.snapshot.planUsageError = err
+                    // Stale data is more useful than nothing — only clear on
+                    // explicit auth failure.
+                    if case .unauthorized = err { self.snapshot.planUsage = nil }
+                }
+            } catch {
+                await MainActor.run {
+                    self.snapshot.planUsageError = .transport(error)
+                }
+            }
+        }
+    }
 
     private func refresh() {
         refreshQueue.async { [weak self] in
             guard let self else { return }
-            let snap = self.computeSnapshot()
-            DispatchQueue.main.async { self.snapshot = snap }
+            var snap = self.computeSnapshot()
+            DispatchQueue.main.async {
+                // Preserve plan-% fields — they're populated by a separate
+                // (slower) timer; the file-derived snapshot would otherwise
+                // overwrite them with nil every 5s.
+                snap.planUsage = self.snapshot.planUsage
+                snap.planUsageError = self.snapshot.planUsageError
+                self.snapshot = snap
+            }
         }
     }
 
@@ -128,9 +204,10 @@ final class UsageMonitor: ObservableObject {
         let startOfToday = Calendar.current.startOfDay(for: now)
         let activeThreshold: TimeInterval = 30
         let awaitingThreshold: TimeInterval = 300
-        // Keep entries from the last 10h so a fixed 5h window starting up to
-        // ~5h ago still has its tokens accounted for.
-        let pruneCutoff = now.addingTimeInterval(-10 * 3600)
+        // Keep entries from the earlier of (start of today, 10h ago) so a
+        // 5h block that opened up to 5h ago is still fully accounted for and
+        // today's totals always cover the full calendar day.
+        let pruneCutoff = min(startOfToday, now.addingTimeInterval(-10 * 3600))
 
         var sawPaths = Set<URL>()
         var mostRecent: (URL, Date)?
@@ -142,10 +219,11 @@ final class UsageMonitor: ObservableObject {
             let mtime = vals?.contentModificationDate ?? .distantPast
             let size = UInt64(vals?.fileSize ?? 0)
 
-            // Files older than the entire day-or-block window can be dropped
-            // from the cache entirely.
-            if mtime < startOfToday && mtime < pruneCutoff {
+            // Files whose latest write is older than our retention window
+            // can't contribute to today or the active block — drop them.
+            if mtime < pruneCutoff {
                 fileCache.removeValue(forKey: url)
+                tailCache.removeValue(forKey: url)
                 continue
             }
             sawPaths.insert(url)
@@ -163,61 +241,61 @@ final class UsageMonitor: ObservableObject {
             // Cache hit: file unchanged since last poll.
             if let cached = fileCache[url],
                cached.size == size,
-               cached.mtime == mtime,
-               cached.dayCaptured == startOfToday {
-                snap.tokensToday += cached.todayTokens
-                snap.costToday += cached.todayCost
-                allEntries.append(contentsOf: cached.recentEntries)
+               cached.mtime == mtime {
+                allEntries.append(contentsOf: cached.entries)
                 continue
             }
 
-            // Otherwise parse — incrementally if the file just grew, fully if
-            // it shrank/rotated or the day rolled over.
-            let dayRolled = (fileCache[url]?.dayCaptured ?? .distantPast) != startOfToday
+            // Parse — incrementally if the file just grew, fully if it
+            // shrank/rotated.
             let prev = fileCache[url]
             let startOffset: Int
             var entry = prev ?? FileCache(mtime: mtime, size: size,
-                                          parsedToOffset: 0,
-                                          dayCaptured: startOfToday,
-                                          todayTokens: 0, todayCost: 0,
-                                          recentEntries: [])
-            if dayRolled || (prev != nil && size < prev!.size) {
-                // Reset: re-parse from start.
+                                          parsedToOffset: 0, entries: [])
+            if let prev, size < prev.size {
+                // File rotated/truncated — re-parse from scratch.
                 startOffset = 0
-                entry.todayTokens = 0
-                entry.todayCost = 0
-                entry.recentEntries.removeAll(keepingCapacity: true)
+                entry.entries.removeAll(keepingCapacity: true)
             } else {
                 startOffset = entry.parsedToOffset
             }
 
-            // Prune in-memory entries older than the 6h window before
-            // appending new ones — bounds memory.
-            entry.recentEntries.removeAll { $0.ts < pruneCutoff }
+            // Drop entries that have aged out of the retention window.
+            entry.entries.removeAll { $0.ts < pruneCutoff }
 
             parseAppended(url: url, from: startOffset, into: &entry,
-                          startOfToday: startOfToday, pruneCutoff: pruneCutoff)
+                          pruneCutoff: pruneCutoff)
 
             entry.mtime = mtime
             entry.size = size
-            entry.dayCaptured = startOfToday
             fileCache[url] = entry
 
-            snap.tokensToday += entry.todayTokens
-            snap.costToday += entry.todayCost
-            allEntries.append(contentsOf: entry.recentEntries)
+            allEntries.append(contentsOf: entry.entries)
         }
 
         // Drop cache entries for files no longer present.
         if fileCache.count != sawPaths.count {
             for key in fileCache.keys where !sawPaths.contains(key) {
                 fileCache.removeValue(forKey: key)
+                tailCache.removeValue(forKey: key)
             }
+        }
+
+        // Aggregate today's totals with global dedup. Same (msg.id, requestId)
+        // can appear up to ~17x across files (session resume/edit/branch);
+        // without dedup, totals and cost roughly double.
+        var seenToday = Set<String>()
+        for e in allEntries where e.ts >= startOfToday {
+            if let k = e.dedupKey {
+                if !seenToday.insert(k).inserted { continue }
+            }
+            snap.tokensToday += e.totalTokens
+            snap.costToday += e.cost
         }
 
         // Determine the *current* fixed 5-hour window — matching Claude
         // Code's billing: the window starts at the first message after the
-        // previous window expired, then runs for exactly 5 hours.
+        // previous window expired, then runs for exactly 5 hours. Deduped.
         if let (windowStart, windowTokens, windowCost) = currentFixedBlock(entries: allEntries, now: now) {
             snap.blockStart = windowStart
             snap.tokensBlock = windowTokens
@@ -227,7 +305,8 @@ final class UsageMonitor: ObservableObject {
         // State + current model from the most-recently-modified file's tail.
         if let (mostRecentURL, mostRecentMtime) = mostRecent {
             let sinceMod = now.timeIntervalSince(mostRecentMtime)
-            let lastInfo = lastAssistantInfo(at: mostRecentURL)
+            let lastInfo = lastAssistantInfo(at: mostRecentURL, mtime: mostRecentMtime,
+                                             size: UInt64((try? mostRecentURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0))
             snap.currentModel = lastInfo?.model
             snap.currentModelTraits = lastInfo?.traits ?? ModelTraits()
             if sinceMod < 3 {
@@ -258,6 +337,7 @@ final class UsageMonitor: ObservableObject {
         var windowStart = sorted[0].ts
         var tokens = 0
         var cost: Double = 0
+        var seen = Set<String>()
 
         for e in sorted {
             if e.ts >= windowStart.addingTimeInterval(windowLen) {
@@ -265,6 +345,10 @@ final class UsageMonitor: ObservableObject {
                 windowStart = e.ts
                 tokens = 0
                 cost = 0
+                seen.removeAll(keepingCapacity: true)
+            }
+            if let k = e.dedupKey {
+                if !seen.insert(k).inserted { continue }
             }
             tokens += e.totalTokens
             cost += e.cost
@@ -284,7 +368,6 @@ final class UsageMonitor: ObservableObject {
     private func parseAppended(url: URL,
                                from offset: Int,
                                into cache: inout FileCache,
-                               startOfToday: Date,
                                pruneCutoff: Date) {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             cache.parsedToOffset = Int(cache.size)
@@ -316,8 +399,7 @@ final class UsageMonitor: ObservableObject {
                         if containsMarker(buf, lineStart: lineStart, lineEnd: idx, marker: assistantMarker) {
                             let lineData = Data(bytes: buf.baseAddress!.advanced(by: lineStart),
                                                 count: idx - lineStart)
-                            ingest(line: lineData, into: &cache,
-                                   startOfToday: startOfToday, pruneCutoff: pruneCutoff)
+                            ingest(line: lineData, into: &cache, pruneCutoff: pruneCutoff)
                         }
                     }
                     lineStart = idx + 1
@@ -353,7 +435,6 @@ final class UsageMonitor: ObservableObject {
 
     private func ingest(line: Data,
                         into cache: inout FileCache,
-                        startOfToday: Date,
                         pruneCutoff: Date) {
         guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               (obj["type"] as? String) == "assistant",
@@ -361,36 +442,54 @@ final class UsageMonitor: ObservableObject {
               let usage = message["usage"] as? [String: Any],
               let tsStr = obj["timestamp"] as? String else { return }
         let ts = iso.date(from: tsStr) ?? isoFallback.date(from: tsStr) ?? .distantPast
+        guard ts >= pruneCutoff else { return }
 
         let model = (message["model"] as? String) ?? "sonnet"
-        let pricing = ModelPricing.forModel(model)
         let input = (usage["input_tokens"] as? Int) ?? 0
         let output = (usage["output_tokens"] as? Int) ?? 0
         let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
         let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
+        // Split the cache-create bucket into 5m vs 1h — they're billed at
+        // 1.25x vs 2x base input rate. Falls back to all-5m when the
+        // breakdown is missing.
+        var cw1h = 0, cw5m = 0
+        if let cc = usage["cache_creation"] as? [String: Any] {
+            cw1h = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
+            cw5m = (cc["ephemeral_5m_input_tokens"] as? Int) ?? 0
+        }
+        if cw1h + cw5m == 0 { cw5m = cacheCreate }
+
+        let bigContext = (input + cacheRead + cacheCreate) > 200_000
+        let pricing = ModelPricing.forModel(model, bigContext: bigContext)
         let total = input + output + cacheCreate + cacheRead
         let cost = Double(input) / 1_000_000 * pricing.input
                  + Double(output) / 1_000_000 * pricing.output
-                 + Double(cacheCreate) / 1_000_000 * pricing.cacheWrite
+                 + Double(cw5m) / 1_000_000 * pricing.cacheWrite5m
+                 + Double(cw1h) / 1_000_000 * pricing.cacheWrite1h
                  + Double(cacheRead) / 1_000_000 * pricing.cacheRead
 
-        if ts >= startOfToday {
-            cache.todayTokens += total
-            cache.todayCost += cost
-        }
-        if ts >= pruneCutoff {
-            cache.recentEntries.append(UsageEntry(ts: ts, totalTokens: total, cost: cost))
-        }
+        // (message.id, requestId) uniquely identifies a billed assistant
+        // turn. The same turn shows up in the JSONL multiple times after
+        // resume/edit/branch; we count it once.
+        let mid = message["id"] as? String
+        let rid = obj["requestId"] as? String
+        let key: String? = (mid != nil && rid != nil) ? "\(mid!)|\(rid!)" : nil
+
+        cache.entries.append(UsageEntry(ts: ts, totalTokens: total, cost: cost, dedupKey: key))
     }
 
-    /// Reads the last ~64KB of `url` for state/model detection.
-    private func lastAssistantInfo(at url: URL)
-        -> (stopReason: String?, model: String?, traits: ModelTraits)?
-    {
+    typealias LastAssistantInfo = (stopReason: String?, model: String?, traits: ModelTraits)
+
+    /// Reads the last ~64KB of `url` for state/model detection. Cached by
+    /// (size, mtime) — re-scanned only when the file actually changed.
+    private func lastAssistantInfo(at url: URL, mtime: Date, size: UInt64) -> LastAssistantInfo? {
+        if let c = tailCache[url], c.size == size, c.mtime == mtime {
+            return c.info
+        }
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        let size = (try? handle.seekToEnd()) ?? 0
-        let offset: UInt64 = size > 65536 ? size - 65536 : 0
+        let endOffset = (try? handle.seekToEnd()) ?? 0
+        let offset: UInt64 = endOffset > 65536 ? endOffset - 65536 : 0
         try? handle.seek(toOffset: offset)
         guard let tail = try? handle.readToEnd() else { return nil }
 
@@ -423,9 +522,6 @@ final class UsageMonitor: ObservableObject {
                 if let content = message["content"] as? [[String: Any]] {
                     traits.thinking = content.contains { ($0["type"] as? String) == "thinking" }
                 }
-                if let m = model?.lowercased() {
-                    traits.fastMode = m == "claude-opus-4-6"
-                }
                 if let usage = message["usage"] as? [String: Any] {
                     let input = (usage["input_tokens"] as? Int) ?? 0
                     let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
@@ -435,8 +531,13 @@ final class UsageMonitor: ObservableObject {
                         let h1 = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
                         traits.oneHourCache = h1 > 0
                     }
+                    // Claude Code's `/fast` toggle surfaces in the usage
+                    // payload as `speed: "fast"` (default is `"standard"`).
+                    traits.fastMode = (usage["speed"] as? String) == "fast"
                 }
-                return (stop, model, traits)
+                let info: LastAssistantInfo = (stop, model, traits)
+                tailCache[url] = (size, mtime, info)
+                return info
             }
         }
         return nil

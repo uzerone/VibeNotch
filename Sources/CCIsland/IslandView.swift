@@ -81,7 +81,8 @@ struct IslandView: View {
     }
 
     private var hasRecentBlock: Bool {
-        monitor.snapshot.blockStart != nil && monitor.snapshot.tokensBlock > 0
+        if let u = monitor.snapshot.planUsage?.fiveHour?.utilization, u > 0 { return true }
+        return monitor.snapshot.blockStart != nil && monitor.snapshot.tokensBlock > 0
     }
 
     private var size: CGSize {
@@ -279,19 +280,26 @@ struct IslandView: View {
             }
             .lineLimit(1)
         } else {
-            // Idle but a 5h block is alive: show live tokens + the actual
-            // clock time at which the block resets.
+            // Idle but a session is alive: prefer the authoritative plan-%
+            // matching claude.ai's UI. Fall back to local tokens.
             HStack(spacing: 6) {
-                Text(formatTokens(monitor.snapshot.tokensBlock))
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white)
-                    .monospacedDigit()
+                if let five = monitor.snapshot.planUsage?.fiveHour {
+                    Text(percentString(five.utilization))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                } else {
+                    Text(formatTokens(monitor.snapshot.tokensBlock))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white)
+                        .monospacedDigit()
+                }
                 separator
                 HStack(spacing: 3) {
                     Text("resets")
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.5))
-                    Text(blockResetClockString())
+                    Text(sessionResetClockString())
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.75))
                         .monospacedDigit()
@@ -363,32 +371,80 @@ struct IslandView: View {
                 .buttonStyle(.plain)
             }
 
-            // Hero: 5h block usage with progress bar
+            // Hero: session plan-% from Anthropic when available — matches
+            // the number claude.ai's "Plan usage" panel shows. Falls back to
+            // local token estimate when the plan endpoint isn't reachable.
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("5-hour block")
+                    Text(monitor.snapshot.planUsage?.fiveHour != nil ? "Session" : "5-hour block")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .tracking(0.5)
                         .foregroundColor(.white.opacity(0.5))
                     Spacer()
-                    Text("resets \(blockResetClockString())")
+                    Text("resets \(sessionResetClockString())")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.5))
                 }
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text(formatTokens(monitor.snapshot.tokensBlock))
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundColor(.white)
-                    Text("tokens")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.5))
-                    Spacer()
-                    Text(String(format: "$%.2f", monitor.snapshot.costBlock))
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.85))
-                        .monospacedDigit()
+                if let five = monitor.snapshot.planUsage?.fiveHour {
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text(percentString(five.utilization))
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .monospacedDigit()
+                        Text("used")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text("\(formatTokens(monitor.snapshot.tokensBlock)) · \(String(format: "$%.2f", monitor.snapshot.costBlock))")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.55))
+                            .monospacedDigit()
+                    }
+                    ProgressTrack(progress: max(0, min(1, five.utilization)))
+                } else {
+                    HStack(alignment: .lastTextBaseline, spacing: 6) {
+                        Text(formatTokens(monitor.snapshot.tokensBlock))
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                        Text("tokens")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Text(String(format: "$%.2f", monitor.snapshot.costBlock))
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
+                            .monospacedDigit()
+                    }
+                    ProgressTrack(progress: blockProgress())
                 }
-                ProgressTrack(progress: blockProgress())
+                // Surface why the authoritative plan-% isn't showing so the
+                // user can act (re-login, allow keychain access, etc.).
+                if monitor.snapshot.planUsage?.fiveHour == nil,
+                   let err = monitor.snapshot.planUsageError {
+                    Text("plan: \(PlanUsageFetcher.hint(for: err))")
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                if let seven = monitor.snapshot.planUsage?.sevenDay {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("Weekly")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .tracking(0.5)
+                            .foregroundColor(.white.opacity(0.45))
+                        Text(percentString(seven.utilization))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
+                            .monospacedDigit()
+                        ProgressTrack(progress: max(0, min(1, seven.utilization)))
+                            .frame(maxWidth: 120)
+                        Spacer()
+                        if let reset = seven.resetsAt {
+                            Text("resets \(Self.weekdayFormatter.string(from: reset))")
+                                .font(.system(size: 9, weight: .medium, design: .rounded))
+                                .foregroundColor(.white.opacity(0.4))
+                        }
+                    }
+                }
             }
 
             // Secondary: today
@@ -473,6 +529,28 @@ struct IslandView: View {
         f.dateStyle = .none
         return f
     }()
+
+    /// "Sun 5:00 PM" — weekday + short time, for weekly resets.
+    static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "E h:mm a"
+        return f
+    }()
+
+    private func percentString(_ u: Double) -> String {
+        let v = max(0, min(100, u * 100))
+        // Match Anthropic's display — whole-number percent.
+        return "\(Int(v.rounded()))%"
+    }
+
+    /// Reset clock string, preferring the authoritative Anthropic-reported
+    /// time when we have it, otherwise the locally-derived block end.
+    private func sessionResetClockString() -> String {
+        if let r = monitor.snapshot.planUsage?.fiveHour?.resetsAt {
+            return Self.clockFormatter.string(from: r)
+        }
+        return blockResetClockString()
+    }
 
     /// Estimated working time = elapsed time since the current 5h block began.
     /// Reflects how long Claude has been actively engaged this session.

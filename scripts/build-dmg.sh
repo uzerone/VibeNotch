@@ -6,22 +6,37 @@ cd "$(dirname "$0")/.."
 APP_NAME="CC Island"
 BIN_NAME="CCIsland"
 BUNDLE_ID="com.ccisland.app"
-VERSION="1.0.0"
+VERSION="1.1.0"
 BUILD_DIR=".build"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
 APP_DIR="$STAGE_DIR/$APP_NAME.app"
 # Final DMG lands at the project root so it's visible in Finder (.build is hidden).
 DMG_PATH="$APP_NAME-$VERSION.dmg"
 
-echo "==> Building release binary"
-swift build -c release
+# Universal binary requires full Xcode (xcbuild). Fall back to host-only when
+# only Command Line Tools are installed.
+if xcrun --find xcbuild >/dev/null 2>&1; then
+    echo "==> Building universal release binary (arm64 + x86_64)"
+    swift build -c release --arch arm64 --arch x86_64
+else
+    echo "==> Building release binary (host arch only — install Xcode for universal)"
+    swift build -c release
+fi
 
 echo "==> Assembling $APP_NAME.app"
 rm -rf "$STAGE_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-cp "$BUILD_DIR/release/$BIN_NAME" "$APP_DIR/Contents/MacOS/$BIN_NAME"
+# Universal builds land under .build/apple/Products/Release, not .build/release.
+UNIVERSAL_BIN="$BUILD_DIR/apple/Products/Release/$BIN_NAME"
+SINGLE_BIN="$BUILD_DIR/release/$BIN_NAME"
+if [ -f "$UNIVERSAL_BIN" ]; then
+    cp "$UNIVERSAL_BIN" "$APP_DIR/Contents/MacOS/$BIN_NAME"
+else
+    cp "$SINGLE_BIN" "$APP_DIR/Contents/MacOS/$BIN_NAME"
+fi
+echo "    architectures: $(lipo -archs "$APP_DIR/Contents/MacOS/$BIN_NAME" 2>/dev/null || echo unknown)"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
