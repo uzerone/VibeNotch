@@ -4,7 +4,7 @@ A Dynamic-Island-style monitor for [Claude Code](https://claude.com/claude-code)
 
 Hidden when idle. Drops down a status line while Claude is running. Hover to expand the stats card.
 
-[**Download CC Island 1.0.0**](./CC%20Island-1.0.0.dmg) — macOS 13+
+[**Download CC Island 1.1.0**](./CC%20Island-1.1.0.dmg) — macOS 13+
 
 ## Dropdown
 
