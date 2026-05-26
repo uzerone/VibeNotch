@@ -6,6 +6,7 @@ struct SettingsView: View {
     let closeAction: () -> Void
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
     @State private var loginError: String?
+    @State private var keychainGranted: Bool = PlanUsageFetcher.hasOAuthToken
     @ObservedObject private var appearance: AppearanceStore = .shared
     @ObservedObject private var placement: PlacementStore = .shared
     @Environment(\.ccTheme) private var theme
@@ -93,13 +94,12 @@ struct SettingsView: View {
             // band kills the dead space and keeps the destructive action
             // visually separate from primary toggles.
             HStack(spacing: 12) {
-                Toggle(isOn: $launchAtLogin) {
+                HStack(spacing: 8) {
                     Text("Launch at login")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.secondary))
+                    GreenSwitch(isOn: $launchAtLogin)
                 }
-                .toggleStyle(SwitchToggleStyle())
-                .tint(.green)
                 .onChange(of: launchAtLogin) { newValue in
                     do {
                         try LoginItem.set(enabled: newValue)
@@ -108,6 +108,26 @@ struct SettingsView: View {
                         loginError = error.localizedDescription
                         launchAtLogin = LoginItem.isEnabled
                     }
+                }
+                // Keychain trust indicator. Green checkmark = the user
+                // granted access; red lock = denied or no `claude /login`
+                // token in the Keychain yet.
+                HStack(spacing: 4) {
+                    Image(systemName: keychainGranted ? "checkmark.shield.fill" : "lock.slash.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(keychainGranted ? .green : .orange)
+                    Text(keychainGranted ? "Keychain" : "No access")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundColor(theme.text(.secondary))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(theme.chrome(0.08)))
+                .help(keychainGranted
+                    ? "Keychain access granted — plan-usage % is the exact figure from Anthropic."
+                    : "No Keychain access — run `claude /login` or relaunch CC Island and click Always Allow when prompted.")
+                .onTapGesture {
+                    keychainGranted = PlanUsageFetcher.hasOAuthToken
                 }
                 Spacer(minLength: 8)
                 Button {
@@ -209,6 +229,45 @@ private struct PlacementChip: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help(option.help)
+    }
+}
+
+/// Custom SwiftUI switch that's guaranteed green when on, regardless of
+/// the user's macOS accent color. SwiftUI's native `.switch` toggle style
+/// on macOS ignores `.tint(.green)` and uses the system accent instead —
+/// so we render the capsule + knob ourselves and control the palette.
+/// Visually matches macOS System Settings toggles.
+struct GreenSwitch: View {
+    @Binding var isOn: Bool
+
+    private let trackWidth: CGFloat = 32
+    private let trackHeight: CGFloat = 18
+    private var knobDiameter: CGFloat { trackHeight - 4 }
+    private var travel: CGFloat { (trackWidth - knobDiameter) / 2 - 1 }
+
+    var body: some View {
+        Capsule()
+            .fill(isOn
+                  ? Color(nsColor: .systemGreen)
+                  : Color(nsColor: .quaternaryLabelColor))
+            .frame(width: trackWidth, height: trackHeight)
+            .overlay(
+                Circle()
+                    .fill(Color.white)
+                    .frame(width: knobDiameter, height: knobDiameter)
+                    .shadow(color: .black.opacity(0.18), radius: 1, y: 0.5)
+                    .offset(x: isOn ? travel : -travel)
+            )
+            .overlay(
+                Capsule().strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+            )
+            .contentShape(Capsule())
+            .onTapGesture {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
+                    isOn.toggle()
+                }
+            }
+            .accessibilityRepresentation { Toggle("", isOn: $isOn) }
     }
 }
 

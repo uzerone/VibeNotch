@@ -472,6 +472,8 @@ struct IslandView: View {
 
     /// Short one-word status — avoids line-wraps in the header. The active
     /// session count is shown separately as a small badge when > 1.
+    /// Mirrors the dropdown's THINKING/WORKING split so the two views
+    /// don't disagree about what Claude is doing.
     private var headerLabel: String {
         switch monitor.snapshot.workState {
         case .working:          return "Working"
@@ -479,6 +481,8 @@ struct IslandView: View {
         case .idle:             return "Idle"
         }
     }
+
+    private var headerLabelColor: Color { theme.text(.secondary) }
 
     /// Center text inside the dropdown. State-driven:
     /// - working + thinking → "THINKING · 1h 23m"
@@ -548,18 +552,9 @@ struct IslandView: View {
         }
     }
 
-    /// Whether Claude is currently in an extended-thinking phase. We treat
-    /// the last assistant turn having a `thinking` block as a signal that
-    /// the in-flight turn is also a reasoning one.
-    private var workingWord: String {
-        monitor.snapshot.currentModelTraits.thinking ? "THINKING" : "WORKING"
-    }
+    private var workingWord: String { "WORKING" }
 
-    private var workingWordColor: Color {
-        monitor.snapshot.currentModelTraits.thinking
-            ? Color(red: 0.78, green: 0.55, blue: 1.0)   // purple, matches thinking vibe
-            : effectiveTheme.primaryText
-    }
+    private var workingWordColor: Color { effectiveTheme.primaryText }
 
     private var separator: some View {
         Circle()
@@ -597,10 +592,18 @@ struct IslandView: View {
                     // metrics already tell you everything.
                     if monitor.snapshot.workState != .idle {
                         HStack(spacing: 6) {
-                            WorkDot(state: monitor.snapshot.workState)
+                            // Match the dropdown's visual language — pulsing
+                            // three-dot indicator while working, tinted by
+                            // the same workingWordColor so the header and
+                            // dropdown agree on what state means.
+                            if monitor.snapshot.workState == .working {
+                                PulsingDots(color: workingWordColor)
+                            } else {
+                                WorkDot(state: monitor.snapshot.workState)
+                            }
                             Text(headerLabel)
                                 .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                .foregroundColor(t.text(.secondary))
+                                .foregroundColor(headerLabelColor)
                             if monitor.snapshot.activeSessions > 1 {
                                 Text("×\(monitor.snapshot.activeSessions)")
                                     .font(.system(size: 9, weight: .bold, design: .rounded))
@@ -1022,8 +1025,8 @@ struct ModelDot: View {
                 .fill(color)
                 .frame(width: 8, height: 8)
                 .shadow(color: color.opacity(0.7), radius: 4)
-                // When extended-thinking is active, blink sharply so the user
-                // can see Claude is in a slow-burn reasoning phase.
+                // Subtle blink for sessions using extended thinking —
+                // a session-level cue, not a per-phase indicator.
                 .opacity(traits.thinking ? (blink ? 0.15 : 1.0) : 1.0)
                 .animation(traits.thinking
                            ? .easeInOut(duration: 0.55).repeatForever(autoreverses: true)
@@ -1067,9 +1070,10 @@ struct WorkDot: View {
     private var color: Color {
         switch state {
         case .idle: return Color.gray.opacity(0.55)
-        // Orange = active work in progress (matches "in the middle of
-        // something — do not interrupt"). Green = ready/awaiting your
-        // decision (the run-light convention: green means go).
+        // Working uses pulsing-dots in both the header and dropdown
+        // now, so this only renders for awaiting-decision (and the
+        // unused idle case as a defensive fallback). Green = ready,
+        // run-light convention.
         case .working: return Color(red: 1.0, green: 0.55, blue: 0.15)
         case .awaitingDecision: return Color.green
         }
