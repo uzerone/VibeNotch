@@ -138,6 +138,15 @@ final class PlanUsageFetcher {
 
     // MARK: - Keychain
 
+    /// Whether the Claude Code OAuth token is currently readable from the
+    /// Keychain. Used by the Settings panel to surface whether the user
+    /// granted Keychain access (or hasn't run `claude /login` yet).
+    /// Performs a real SecItemCopyMatching lookup — if the user denied
+    /// the prompt, this returns false.
+    static var hasOAuthToken: Bool {
+        PlanUsageFetcher().readOAuthToken() != nil
+    }
+
     /// Pulls the bearer token out of the keychain entry Claude Code creates
     /// on `/login`. The value is a JSON blob; we unwrap `claudeAiOauth.accessToken`.
     private func readOAuthToken() -> String? {

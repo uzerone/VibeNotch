@@ -8,28 +8,34 @@ Hidden when idle. Drops down a status line while Claude is running. Hover to exp
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.3.0
+## What's new in 1.4.0
 
-- **Refined motion** — pulsing dots while WORKING, breathing checkmark on FINISH, auto-dismiss back to the reset clock in notch mode.
-- **Per-model palette** — Opus (electric purple), Sonnet (modern blue), Haiku (energetic mint).
-- **Modern editorial layout** — dual hero numbers in the session row, hero TODAY summary, gauge-style progress that warms toward amber as you approach your limit.
-- **Cleaner idle** — static gray dots and "Idle" labels are gone; the pill only surfaces what's actively meaningful.
-- Removed the glass/tint appearance modes and the burn-rate panel — they didn't earn their space.
+- The status indicator (three pulsing dots) now looks the same in the dropdown and in the expanded card — no more visual mismatch between the two views.
+- A new badge in Settings tells you whether CC Island can see your Claude login, so you know straight away if the percentage shown is the real number from Anthropic or a local estimate.
+- The "Launch at login" switch is a clean green-when-on toggle, matching the way switches look in macOS System Settings — regardless of your accent color.
+
+## 1.3.0
+
+- Smoother motion: pulsing dots while Claude is working, a soft checkmark when it's waiting on you, and the pill quietly tucks away once you've seen it.
+- Fresh model colors — purple for Opus, blue for Sonnet, mint green for Haiku.
+- Cleaner numbers: a hero "today's spend" line, side-by-side tokens and dollars in the session row, and a progress bar that warms up to amber as you approach your limit.
+- No more clutter when nothing's happening — the idle gray dot is gone.
+- Removed the glass/tinted appearance options and the burn-rate panel.
 
 ## 1.2.0
 
-- **Free mode** — detach the pill from the notch and float it anywhere on screen via Settings → Placement.
-- **Per-model session split** — Opus / Sonnet / Haiku breakdown of the current 5h block.
-- **Burn rate panel** *(removed in 1.3.0)*.
-- Performance improvements and bug fixes.
+- **Free mode** — drag the pill anywhere on screen instead of pinning it to the notch.
+- See which models you're using — Opus / Sonnet / Haiku — and how much each costs you per session.
+- Burn rate panel (removed in 1.3.0 — it wasn't actually helpful).
+- Speed-ups and small fixes.
 
 ## 1.1.0
 
-- Keychain-backed authentication so the pill can call Anthropic's plan-usage endpoint and surface the same percentage Claude Code's `/usage` reports.
+- The pill now shows the same usage percentage you see in Claude Code's `/usage` and on claude.ai, by reading your existing Claude login.
 
 ## 1.0.0
 
-- Initial demo — notch-pinned pill, local-only token estimate from `~/.claude/projects/**/*.jsonl`.
+- First version — a small pill under the notch that estimates token usage from local Claude Code files.
 
 ## First launch — please choose "Always Allow"
 

@@ -40,6 +40,10 @@ enum WorkState {
 }
 
 struct ModelTraits {
+    /// Session capability — the last assistant turn contained a thinking
+    /// block. Drives the THINKING chip in the expanded card; that's a
+    /// session-level signal, not a moment-by-moment phase indicator
+    /// (phases alternate too fast to be useful as a label).
     var thinking: Bool = false
     var oneMillionContext: Bool = false
     var fastMode: Bool = false
