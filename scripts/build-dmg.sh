@@ -75,8 +75,20 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc codesigning"
-codesign --force --deep --sign - "$APP_DIR" >/dev/null
+# Prefer a stable signing identity if available — keeps the Keychain ACL
+# stable across rebuilds so "Always Allow" persists. Falls back to ad-hoc
+# when the identity isn't installed (first build / contributors).
+#
+# Override the identity name with CCISLAND_SIGN_IDENTITY in the environment.
+# Run ./scripts/setup-signing-identity.sh once to install the default.
+SIGN_IDENTITY="${CCISLAND_SIGN_IDENTITY:-CC Island Self-Signed}"
+if security find-identity -p codesigning 2>/dev/null | grep -F "$SIGN_IDENTITY" >/dev/null; then
+    echo "==> Codesigning with '$SIGN_IDENTITY'"
+    codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
+else
+    echo "==> Ad-hoc codesigning (no stable identity — run scripts/setup-signing-identity.sh to fix the keychain re-prompt)"
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null
+fi
 
 echo "==> Building DMG at $DMG_PATH"
 rm -f "$DMG_PATH"
