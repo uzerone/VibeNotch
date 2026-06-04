@@ -6,7 +6,7 @@ struct SettingsView: View {
     let closeAction: () -> Void
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
     @State private var loginError: String?
-    @State private var keychainGranted: Bool = PlanUsageFetcher.hasOAuthToken
+    @State private var keychainGranted: Bool = ClaudePlanFetcher.hasOAuthToken
     @ObservedObject private var appearance: AppearanceStore = .shared
     @ObservedObject private var placement: PlacementStore = .shared
     @Environment(\.ccTheme) private var theme
@@ -109,14 +109,15 @@ struct SettingsView: View {
                         launchAtLogin = LoginItem.isEnabled
                     }
                 }
-                // Keychain trust indicator. Green checkmark = the user
-                // granted access; red lock = denied or no `claude /login`
-                // token in the Keychain yet.
+                // Keychain trust indicator (Claude only). Green checkmark = the
+                // user granted access; orange lock = denied or no `claude /login`
+                // token in the Keychain yet. Codex needs no keychain — its
+                // plan-% is read straight from the local ~/.codex session logs.
                 HStack(spacing: 4) {
                     Image(systemName: keychainGranted ? "checkmark.shield.fill" : "lock.slash.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(keychainGranted ? .green : .orange)
-                    Text(keychainGranted ? "Keychain" : "No access")
+                    Text(keychainGranted ? "Keychain (Claude)" : "No access")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(theme.text(.secondary))
                 }
@@ -124,10 +125,10 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
                 .background(Capsule().fill(theme.chrome(0.08)))
                 .help(keychainGranted
-                    ? "Keychain access granted — plan-usage % is the exact figure from Anthropic."
-                    : "No Keychain access — run `claude /login` or relaunch CC Island and click Always Allow when prompted.")
+                    ? "Keychain access granted — Claude plan-usage % is the exact figure from Anthropic. (Codex plan-% comes from local ~/.codex logs — no keychain needed.)"
+                    : "No Keychain access — run `claude /login` or relaunch VibeNotch and click Always Allow when prompted. (This is for Claude only; Codex needs no keychain.)")
                 .onTapGesture {
-                    keychainGranted = PlanUsageFetcher.hasOAuthToken
+                    keychainGranted = ClaudePlanFetcher.hasOAuthToken
                 }
                 Spacer(minLength: 8)
                 Button {
@@ -141,7 +142,7 @@ struct SettingsView: View {
                         .background(Capsule().fill(Color.red.opacity(0.55)))
                 }
                 .buttonStyle(.plain)
-                .help("Quit CC Island")
+                .help("Quit VibeNotch")
             }
 
             if let err = loginError {
@@ -283,7 +284,7 @@ enum LoginItem {
 
     static func set(enabled: Bool) throws {
         guard #available(macOS 13.0, *) else {
-            throw NSError(domain: "CCIsland", code: 1,
+            throw NSError(domain: "VibeNotch", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "Requires macOS 13+"])
         }
         if enabled {

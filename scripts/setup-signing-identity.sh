@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One-time setup: creates a self-signed code-signing certificate and imports
-# it into the login keychain. Once installed, build-dmg.sh signs CC Island
+# it into the login keychain. Once installed, build-dmg.sh signs VibeNotch
 # with this stable identity, so macOS treats every rebuild as the same app
 # and a single "Always Allow" on the Keychain prompt persists forever.
 #
 # Idempotent — safe to re-run; bails out if the identity already exists.
 set -euo pipefail
 
-IDENTITY="CC Island Self-Signed"
+IDENTITY="VibeNotch Self-Signed"
 LOGIN_KC="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-identity -p codesigning 2>/dev/null | grep -F "$IDENTITY" >/dev/null; then
@@ -48,7 +48,7 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 # and 3DES encryption. Newer openssl defaults to SHA-256 + AES which fails
 # with a misleading "MAC verification failed". A non-empty password works
 # more reliably than empty across openssl versions; we'll strip it on import.
-P12_PASS="ccisland"
+P12_PASS="vibenotch"
 openssl pkcs12 -export \
     -inkey "$TMP/key.pem" \
     -in "$TMP/cert.pem" \
@@ -79,5 +79,5 @@ echo "   Next: ./scripts/build-dmg.sh"
 echo
 echo "Note: This cert is NOT trusted by Gatekeeper — first launch of the .app"
 echo "still needs a right-click → Open. But macOS's Keychain ACL now treats"
-echo "every CC Island rebuild as the same app, so you only need to click"
+echo "every VibeNotch rebuild as the same app, so you only need to click"
 echo "\"Always Allow\" once on the Claude Code-credentials prompt."

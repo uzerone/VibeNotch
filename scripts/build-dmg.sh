@@ -3,10 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP_NAME="CC Island"
-BIN_NAME="CCIsland"
-BUNDLE_ID="com.ccisland.app"
-VERSION="1.4.0"
+APP_NAME="VibeNotch"
+BIN_NAME="VibeNotch"
+BUNDLE_ID="com.vibenotch.app"
+VERSION="1.5.0"
 BUILD_DIR=".build"
 STAGE_DIR="$BUILD_DIR/dmg-stage"
 APP_DIR="$STAGE_DIR/$APP_NAME.app"
@@ -79,9 +79,9 @@ PLIST
 # stable across rebuilds so "Always Allow" persists. Falls back to ad-hoc
 # when the identity isn't installed (first build / contributors).
 #
-# Override the identity name with CCISLAND_SIGN_IDENTITY in the environment.
+# Override the identity name with VIBENOTCH_SIGN_IDENTITY in the environment.
 # Run ./scripts/setup-signing-identity.sh once to install the default.
-SIGN_IDENTITY="${CCISLAND_SIGN_IDENTITY:-CC Island Self-Signed}"
+SIGN_IDENTITY="${VIBENOTCH_SIGN_IDENTITY:-VibeNotch Self-Signed}"
 if security find-identity -p codesigning 2>/dev/null | grep -F "$SIGN_IDENTITY" >/dev/null; then
     echo "==> Codesigning with '$SIGN_IDENTITY'"
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null

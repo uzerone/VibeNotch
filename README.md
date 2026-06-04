@@ -1,17 +1,23 @@
-# CC Island
+# VibeNotch
 
-> **Status — in active development.** CC Island is a personal-scale project that's still being shaped. Expect breaking layout changes, occasional bugs, and feature churn between releases. Use it, file issues, but don't depend on it as a stable measurement of your Anthropic billing.
+> **Status — in active development.** VibeNotch is a personal-scale project that's still being shaped. Expect breaking layout changes, occasional bugs, and feature churn between releases. Use it, file issues, but don't depend on it as a stable measurement of your Anthropic billing.
 
-A Dynamic-Island-style monitor for [Claude Code](https://claude.com/claude-code), pinned to the MacBook Pro notch.
+A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
-Hidden when idle. Drops down a status line while Claude is running. Hover to expand the stats card.
+Hidden when idle. Drops down a status line while Claude or Codex is running. Hover to expand the stats card.
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
+
+## What's new in 1.5.0
+
+- VibeNotch now watches **OpenAI's Codex** too, right alongside Claude. The one pill follows whatever you're working in — switch to Codex and it turns teal, shows **GPT-5.5**, and adds a chip for how hard it's thinking.
+- No login or setup needed for Codex — it's all read from files already on your Mac. The **percentage** you've used (5-hour and 7-day, with reset times) is the exact figure OpenAI reports.
+- One honest note: the Codex **dollar amount** is our own estimate from your token counts, so treat it as a ballpark, not a bill. The percentage is exact.
 
 ## What's new in 1.4.0
 
 - The little dots that tell you Claude is working now look exactly the same whether you're peeking at the pill or have the full card open.
-- A small note in Settings now tells you, in plain words, whether CC Island can see your Claude login — so you instantly know if the number you're looking at is the real one or just a guess.
+- A small note in Settings now tells you, in plain words, whether VibeNotch can see your Claude login — so you instantly know if the number you're looking at is the real one or just a guess.
 - The "Launch at login" switch is now a friendly green when it's on, just like the switches in your Mac's regular Settings app.
 
 ## 1.3.0
@@ -39,21 +45,21 @@ Requires macOS 13+. **No pre-built binary** — build from source with the scrip
 
 ## First launch — please click "Always Allow"
 
-The first time you open CC Island, a little window will pop up from your Mac asking if CC Island can look at your Claude login.
+The first time you open VibeNotch, a little window will pop up from your Mac asking if VibeNotch can look at your Claude login.
 
 **Please click the "Always Allow" button.**
 
-That's it. CC Island can now show you the exact same usage percentage you see inside Claude Code and on claude.ai.
+That's it. VibeNotch can now show you the exact same usage percentage you see inside Claude Code and on claude.ai.
 
 A few things worth knowing:
 
-- **Why two buttons?** "Allow" only works for one launch — so the window will pop up again next time you open CC Island, and the time after that, and so on. "Always Allow" means you only have to do this once.
-- **Is it safe?** Yes. CC Island only uses your login to ask Anthropic "how much have I used this month?" — the same question Claude Code asks. Your login never goes anywhere else, and CC Island doesn't send any data to anyone but Anthropic.
-- **What if I click "Deny"?** CC Island still works — it just shows a rough guess of your usage based on local files instead of the exact number from Anthropic.
+- **Why two buttons?** "Allow" only works for one launch — so the window will pop up again next time you open VibeNotch, and the time after that, and so on. "Always Allow" means you only have to do this once.
+- **Is it safe?** Yes. VibeNotch only uses your login to ask Anthropic "how much have I used this month?" — the same question Claude Code asks. Your login never goes anywhere else, and VibeNotch doesn't send any data to anyone but Anthropic.
+- **What if I click "Deny"?** VibeNotch still works — it just shows a rough guess of your usage based on local files instead of the exact number from Anthropic.
 
-### Want "Always Allow" to stick when you update CC Island?
+### Want "Always Allow" to stick when you update VibeNotch?
 
-If you don't do anything special, every new version of CC Island will look like a brand-new app to your Mac, so the "Always Allow" prompt will come back every time you update.
+If you don't do anything special, every new version of VibeNotch will look like a brand-new app to your Mac, so the "Always Allow" prompt will come back every time you update.
 
 To fix this, open Terminal **once** and run:
 
@@ -61,7 +67,7 @@ To fix this, open Terminal **once** and run:
 ./scripts/setup-signing-identity.sh
 ```
 
-You only ever need to run this once. After that, click "Always Allow" the next time the prompt shows up, and you'll never see it again — even when you install a newer version of CC Island.
+You only ever need to run this once. After that, click "Always Allow" the next time the prompt shows up, and you'll never see it again — even when you install a newer version of VibeNotch.
 
 ## Build
 

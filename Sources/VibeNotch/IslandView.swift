@@ -414,9 +414,16 @@ struct IslandView: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Pretty display name: "Opus 4.7", "Sonnet 4.6", "Haiku 4.5", etc.
+    /// Pretty display name: "Opus 4.7", "Sonnet 4.6", "Haiku 4.5",
+    /// "GPT-5.5", "GPT-5.4 mini", "Codex 5.3", "Codex 5.3 Spark", etc.
     private var modelDisplayName: String {
         guard let m = monitor.snapshot.currentModel else { return "—" }
+        let lower = m.lowercased()
+        // OpenAI / Codex models keep their canonical id (don't run the
+        // "claude-" strip + version-split path, which would mangle the names).
+        if lower.hasPrefix("gpt") || lower.contains("codex") {
+            return Self.formatOpenAIModel(lower) ?? m.uppercased()
+        }
         let parts = m.replacingOccurrences(of: "claude-", with: "").split(separator: "-")
         // e.g. ["opus", "4", "7"] → "Opus 4.7"
         guard let family = parts.first.map(String.init) else { return m }
@@ -424,6 +431,35 @@ struct IslandView: View {
         if parts.count >= 3 { return "\(nameCap) \(parts[1]).\(parts[2])" }
         if parts.count == 2 { return "\(nameCap) \(parts[1])" }
         return nameCap
+    }
+
+    /// Clean labels for OpenAI's Codex CLI lineup. Codex-suffixed coding
+    /// models read as "Codex <ver>" (the agentic-coding brand); the rest read
+    /// as "GPT-<ver>" with any size suffix kept. `model` is already lowercased.
+    ///   gpt-5.5            → "GPT-5.5"
+    ///   gpt-5.4-mini       → "GPT-5.4 mini"
+    ///   gpt-5.3-codex      → "Codex 5.3"
+    ///   gpt-5.3-codex-spark→ "Codex 5.3 Spark"
+    static func formatOpenAIModel(_ model: String) -> String? {
+        // Pull the version number (e.g. "5.5", "5.4", "5.3") if present.
+        let ver = model.split(whereSeparator: { !"0123456789.".contains($0) })
+            .first(where: { $0.contains(".") }).map(String.init)
+
+        if model.contains("codex") {
+            var label = "Codex"
+            if let v = ver { label += " \(v)" }
+            if model.contains("spark") { label += " Spark" }
+            return label
+        }
+        if model.hasPrefix("gpt") {
+            guard let v = ver else { return model.uppercased() }
+            var label = "GPT-\(v)"
+            if model.contains("nano") { label += " nano" }
+            else if model.contains("mini") { label += " mini" }
+            else if model.contains("pro") { label += " Pro" }
+            return label
+        }
+        return nil
     }
 
     /// Variant tags to chip alongside the model name, each with a tooltip
@@ -440,6 +476,9 @@ struct IslandView: View {
         }
         if t.fastMode {
             tags.append(("FAST", "/fast mode is toggled — Opus 4.6 at faster output speed"))
+        }
+        if let e = t.reasoningEffort {
+            tags.append((e.uppercased(), "Codex reasoning effort — how much the model deliberates per turn"))
         }
         return tags
     }
@@ -775,17 +814,26 @@ struct IslandView: View {
         if m.contains("opus") { return "Opus" }
         if m.contains("sonnet") { return "Sonnet" }
         if m.contains("haiku") { return "Haiku" }
+        // OpenAI / Codex models — keep them distinct per model (GPT-5.5,
+        // GPT-5.4 mini, Codex 5.3, …) instead of collapsing to one bucket.
+        if m.hasPrefix("gpt") || m.contains("codex") {
+            return Self.formatOpenAIModel(m) ?? "GPT"
+        }
         return "Other"
     }
 
     /// Reverse of `familyLabel` — gives `ModelDot.colorForModel` a string it
-    /// recognizes so the segment color matches the model dot.
+    /// recognizes so the segment color matches the model dot. Any OpenAI
+    /// family resolves to a gpt/codex id, which `colorForModel` tints teal.
     private func modelIdForFamily(_ family: String) -> String {
         switch family {
-        case "Opus":   return "claude-opus"
-        case "Sonnet": return "claude-sonnet"
-        case "Haiku":  return "claude-haiku"
-        default:       return "claude-other"
+        case "Opus":    return "claude-opus"
+        case "Sonnet":  return "claude-sonnet"
+        case "Haiku":   return "claude-haiku"
+        default:
+            let f = family.lowercased()
+            if f.hasPrefix("gpt") || f.contains("codex") { return "gpt-5.5" }
+            return "claude-other"
         }
     }
 
@@ -1055,6 +1103,13 @@ struct ModelDot: View {
         // speed-and-lightness positioning. Distinct from both the regal
         // purple and the cool blue.
         if m.contains("haiku")  { return Color(red: 0.28, green: 0.88, blue: 0.65) }
+        // OpenAI Codex (gpt-5.x / codex) — signature teal-green. Distinct from
+        // all three Claude families so the "auto" pill makes the active
+        // provider obvious at a glance.
+        if m.hasPrefix("gpt") || m.contains("codex")
+            || m.contains("o3") || m.contains("o4") {
+            return Color(red: 0.10, green: 0.72, blue: 0.55)
+        }
         return Color.gray.opacity(0.55)
     }
 }

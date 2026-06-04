@@ -48,7 +48,7 @@ enum ResolvedAppearance {
 final class AppearanceStore: ObservableObject {
     static let shared = AppearanceStore()
 
-    private static let key = "CCIsland.appearance"
+    private static let key = "VibeNotch.appearance"
 
     /// User's pick (may be `.system`).
     @Published var current: Appearance {

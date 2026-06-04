@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "CCIsland",
+    name: "VibeNotch",
     platforms: [.macOS(.v13)],
     targets: [
-        .executableTarget(name: "CCIsland", path: "Sources/CCIsland")
+        .executableTarget(name: "VibeNotch", path: "Sources/VibeNotch")
     ]
 )
