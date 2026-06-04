@@ -43,9 +43,9 @@ enum Placement: String, CaseIterable, Identifiable {
 final class PlacementStore: ObservableObject {
     static let shared = PlacementStore()
 
-    private static let modeKey = "CCIsland.placement"
-    private static let originXKey = "CCIsland.freeOriginX"
-    private static let originYKey = "CCIsland.freeOriginY"
+    private static let modeKey = "VibeNotch.placement"
+    private static let originXKey = "VibeNotch.freeOriginX"
+    private static let originYKey = "VibeNotch.freeOriginY"
 
     @Published var mode: Placement {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }

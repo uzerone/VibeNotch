@@ -1,28 +1,14 @@
 import Foundation
 import Security
 
-/// One plan-budget bucket as Anthropic surfaces it via the `/api/oauth/usage`
-/// endpoint that backs Claude Code's `/usage` slash command and the
-/// claude.ai web UI's "Plan usage" panel.
-struct PlanBudget: Equatable {
-    /// 0…1 (Anthropic stores it as a fraction). UI shows `utilization * 100`.
-    var utilization: Double
-    var resetsAt: Date?
-}
-
-struct PlanUsage: Equatable {
-    var fiveHour: PlanBudget?       // "Current session" — the 5h block
-    var sevenDay: PlanBudget?       // "All models" weekly bucket
-    var sevenDayOpus: PlanBudget?   // Opus-only weekly (if surfaced)
-    var sevenDaySonnet: PlanBudget? // Sonnet-only weekly (if surfaced)
-    var fetchedAt: Date
-}
-
 /// Reads the OAuth access token stashed by Claude Code's `/login` flow and
 /// hits Anthropic's private plan-usage endpoint. The endpoint is what powers
 /// Claude Code's `/usage` slash command — same data the web UI shows, so this
 /// is the only way to get plan-% that actually agrees with claude.ai.
-final class PlanUsageFetcher {
+///
+/// Claude-specific: Codex needs none of this — its plan-% is read straight from
+/// the local session logs (see `CodexProvider`).
+final class ClaudePlanFetcher {
     private let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -124,7 +110,7 @@ final class PlanUsageFetcher {
     private func writeDiagnostic(_ data: Data) {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                            in: .userDomainMask).first?
-            .appendingPathComponent("CCIsland", isDirectory: true)
+            .appendingPathComponent("VibeNotch", isDirectory: true)
         guard let dir else { return }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: dir.appendingPathComponent("last-usage.json"))
@@ -144,7 +130,7 @@ final class PlanUsageFetcher {
     /// Performs a real SecItemCopyMatching lookup — if the user denied
     /// the prompt, this returns false.
     static var hasOAuthToken: Bool {
-        PlanUsageFetcher().readOAuthToken() != nil
+        ClaudePlanFetcher().readOAuthToken() != nil
     }
 
     /// Pulls the bearer token out of the keychain entry Claude Code creates

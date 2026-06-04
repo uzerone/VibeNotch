@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mouseMonitor: Any?
     private var lastCursorInside = false
 
-    private let externalScreenPrefKey = "CCIsland.preferredExternalScreen"
+    private let externalScreenPrefKey = "VibeNotch.preferredExternalScreen"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -316,7 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: [.titled, .closable, .nonactivatingPanel],
                             backing: .buffered, defer: false)
-        panel.title = "Pick a display for CC Island"
+        panel.title = "Pick a display for VibeNotch"
         panel.level = .floating
         panel.isFloatingPanel = true
         let chooser = ScreenChooserView(screens: screens) { [weak self] picked in
@@ -354,7 +354,7 @@ struct ScreenChooserView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Your MacBook's display isn't available.")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Pick a display to host CC Island. It'll move back to the MacBook automatically when you open the lid.")
+            Text("Pick a display to host VibeNotch. It'll move back to the MacBook automatically when you open the lid.")
                 .font(.system(size: 11))
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
