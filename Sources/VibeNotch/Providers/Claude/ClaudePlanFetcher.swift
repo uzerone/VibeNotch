@@ -37,8 +37,27 @@ final class ClaudePlanFetcher {
     }
 
     /// One-shot fetch. Returns the parsed budgets or throws.
+    ///
+    /// Token acquisition is two-tier:
+    ///   1. Try our own keychain cache (created and owned by VibeNotch — no
+    ///      ACL prompt because we made it).
+    ///   2. Miss / expired → read Claude Code's keychain item once, then
+    ///      mirror it into the cache so step 1 services every subsequent
+    ///      poll. This collapses the steady-state from one Claude Code-
+    ///      credentials read every 60s to one read at first launch and after
+    ///      `claude /login` refreshes the token.
     func fetch() async throws -> PlanUsage {
-        guard let token = readOAuthToken() else { throw FetchError.noToken }
+        let fromCache: Bool
+        var token: String
+        if let cached = cachedToken() {
+            fromCache = true
+            token = cached
+        } else {
+            fromCache = false
+            guard let fresh = readOAuthToken() else { throw FetchError.noToken }
+            token = fresh
+            storeCachedToken(fresh)
+        }
 
         var req = URLRequest(url: endpoint)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -51,11 +70,27 @@ final class ClaudePlanFetcher {
         } catch { throw FetchError.transport(error) }
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 401 { throw FetchError.unauthorized }
+        if status == 401 {
+            // Cache may be stale (token rotated by `claude /login`). Drop it
+            // and retry exactly once with a fresh read from Claude Code.
+            clearCachedToken()
+            if fromCache, let fresh = readOAuthToken(), fresh != token {
+                storeCachedToken(fresh)
+                token = fresh
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                let (d2, r2) = try await session.data(for: req)
+                let s2 = (r2 as? HTTPURLResponse)?.statusCode ?? 0
+                if s2 == 401 { throw FetchError.unauthorized }
+                guard (200..<300).contains(s2) else { throw FetchError.http(s2) }
+                return try parseResponse(d2)
+            }
+            throw FetchError.unauthorized
+        }
         guard (200..<300).contains(status) else { throw FetchError.http(status) }
+        return try parseResponse(data)
+    }
 
-        // Persist raw payload for diagnostics — until the schema is settled,
-        // having the actual server response trumps guessing field names.
+    private func parseResponse(_ data: Data) throws -> PlanUsage {
         writeDiagnostic(data)
 
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -126,11 +161,63 @@ final class ClaudePlanFetcher {
 
     /// Whether the Claude Code OAuth token is currently readable from the
     /// Keychain. Used by the Settings panel to surface whether the user
-    /// granted Keychain access (or hasn't run `claude /login` yet).
-    /// Performs a real SecItemCopyMatching lookup — if the user denied
-    /// the prompt, this returns false.
+    /// granted Keychain access (or hasn't run `claude /login` yet). The
+    /// cached copy counts — if the cache holds a token, we *had* access at
+    /// some point and don't need a fresh prompt to claim the answer is yes.
     static var hasOAuthToken: Bool {
-        ClaudePlanFetcher().readOAuthToken() != nil
+        let f = ClaudePlanFetcher()
+        return f.cachedToken() != nil || f.readOAuthToken() != nil
+    }
+
+    /// Keychain item VibeNotch creates and owns. Reading this entry never
+    /// triggers an ACL prompt because the app that created the item is
+    /// automatically in the trusted-apps list — that's how macOS makes
+    /// per-app keychain items work without user interaction.
+    private static let cachedTokenService = "VibeNotch.cached.claude-token"
+    private var cachedTokenAccount: String { NSUserName() }
+
+    private func cachedToken() -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.cachedTokenService,
+            kSecAttrAccount as String: cachedTokenAccount,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data,
+              let token = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty else { return nil }
+        return token
+    }
+
+    private func storeCachedToken(_ token: String) {
+        let data = Data(token.utf8)
+        let base: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.cachedTokenService,
+            kSecAttrAccount as String: cachedTokenAccount,
+        ]
+        // Upsert: try update first, fall back to add.
+        let attrs: [String: Any] = [kSecValueData as String: data]
+        let updateStatus = SecItemUpdate(base as CFDictionary, attrs as CFDictionary)
+        if updateStatus == errSecItemNotFound {
+            var newItem = base
+            newItem[kSecValueData as String] = data
+            newItem[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            SecItemAdd(newItem as CFDictionary, nil)
+        }
+    }
+
+    private func clearCachedToken() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.cachedTokenService,
+            kSecAttrAccount as String: cachedTokenAccount,
+        ]
+        SecItemDelete(query as CFDictionary)
     }
 
     /// Pulls the bearer token out of the keychain entry Claude Code creates
