@@ -8,6 +8,11 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
+## What's new in 1.5.1
+
+- Meet **Fable 5** — Anthropic's new flagship. VibeNotch now knows it by name, gives it its own flagship rose-pink dot, and prices it correctly at $10/$50 per million tokens.
+- **Fixed a big cost bug:** Opus 4.5 and newer were being charged at the old Opus 4.1 rate ($15/$75), which overstated your Opus spend roughly threefold. Now every Claude model — including Opus 4.8 — uses its real current price, so the dollar figures actually add up.
+
 ## What's new in 1.5.0
 
 - VibeNotch now watches **OpenAI's Codex** too, right alongside Claude. The one pill follows whatever you're working in — switch to Codex and it turns teal, shows **GPT-5.5**, and adds a chip for how hard it's thinking.

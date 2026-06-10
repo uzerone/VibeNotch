@@ -424,7 +424,12 @@ struct IslandView: View {
         if lower.hasPrefix("gpt") || lower.contains("codex") {
             return Self.formatOpenAIModel(lower) ?? m.uppercased()
         }
-        let parts = m.replacingOccurrences(of: "claude-", with: "").split(separator: "-")
+        // Strip a bracketed capability suffix like "[1m]" before parsing —
+        // the 1M-context variant id is "claude-fable-5[1m]", which would
+        // otherwise leak into the label as "Fable 5[1m]". The 1M state is
+        // already surfaced separately by the "1M" trait chip.
+        let base = m.split(separator: "[").first.map(String.init) ?? m
+        let parts = base.replacingOccurrences(of: "claude-", with: "").split(separator: "-")
         // e.g. ["opus", "4", "7"] → "Opus 4.7"
         guard let family = parts.first.map(String.init) else { return m }
         let nameCap = family.prefix(1).uppercased() + family.dropFirst()
@@ -811,6 +816,7 @@ struct IslandView: View {
 
     private func familyLabel(for model: String) -> String {
         let m = model.lowercased()
+        if m.contains("fable") || m.contains("mythos") { return "Fable" }
         if m.contains("opus") { return "Opus" }
         if m.contains("sonnet") { return "Sonnet" }
         if m.contains("haiku") { return "Haiku" }
@@ -827,6 +833,7 @@ struct IslandView: View {
     /// family resolves to a gpt/codex id, which `colorForModel` tints teal.
     private func modelIdForFamily(_ family: String) -> String {
         switch family {
+        case "Fable":   return "claude-fable"
         case "Opus":    return "claude-opus"
         case "Sonnet":  return "claude-sonnet"
         case "Haiku":   return "claude-haiku"
@@ -1091,6 +1098,13 @@ struct ModelDot: View {
 
     static func colorForModel(_ model: String?) -> Color {
         guard let m = model?.lowercased() else { return Color.gray.opacity(0.55) }
+        // Fable / Mythos — flagship rose-magenta. The warmest, most saturated
+        // hue in the set so the top-tier model stands apart from the cool
+        // Claude trio (purple/blue/mint) and the teal Codex, while staying
+        // clear of the amber reserved for "approaching limit".
+        if m.contains("fable") || m.contains("mythos") {
+            return Color(red: 1.00, green: 0.42, blue: 0.72)
+        }
         // Opus — electric royal purple. Bright and saturated so it reads
         // crisp at the 8pt dot scale, but still distinctively "Opus" in
         // the purple family.
