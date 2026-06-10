@@ -294,8 +294,7 @@ final class ClaudeProvider: UsageProvider {
         }
         if cw1h + cw5m == 0 { cw5m = cacheCreate }
 
-        let bigContext = (input + cacheRead + cacheCreate) > 200_000
-        let pricing = ModelPricing.forModel(model, bigContext: bigContext)
+        let pricing = ModelPricing.forModel(model)
         let total = input + output + cacheCreate + cacheRead
         let cost = Double(input) / 1_000_000 * pricing.input
                  + Double(output) / 1_000_000 * pricing.output
