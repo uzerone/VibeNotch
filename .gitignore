@@ -21,3 +21,8 @@ DerivedData/
 
 # Build artifacts — users compile their own .dmg via scripts/build-dmg.sh
 *.dmg
+
+# Icon Composer working files (the compiled icon/AppIcon.icns is what ships)
+/VibeNotch.icon/
+/VibeNotch Exports/
+/icon/AppIcon.iconset/
