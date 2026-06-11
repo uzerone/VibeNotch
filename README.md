@@ -1,4 +1,8 @@
-# VibeNotch
+<p align="center">
+  <img src="assets/icon.png" alt="VibeNotch app icon" width="400" height="400">
+</p>
+
+<h1 align="center">VibeNotch</h1>
 
 > **Status — in active development.** VibeNotch is a personal-scale project that's still being shaped. Expect breaking layout changes, occasional bugs, and feature churn between releases. Use it, file issues, but don't depend on it as a stable measurement of your Anthropic billing.
 
@@ -8,18 +12,22 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.5.1
+## What's new in 1.5.2
+
+- VibeNotch finally has a **real app icon**. It runs quietly in the background with no Dock icon, but when you go looking for it — in Spotlight search or your Applications folder — it used to be a blank placeholder. Now it's the friendly notch face you see at the top of this page.
+
+## 1.5.1
 
 - Meet **Fable 5** — Anthropic's new flagship. VibeNotch now knows it by name, gives it its own flagship rose-pink dot, and prices it correctly at $10/$50 per million tokens.
 - **Fixed a big cost bug:** Opus 4.5 and newer were being charged at the old Opus 4.1 rate ($15/$75), which overstated your Opus spend roughly threefold. Now every Claude model — including Opus 4.8 — uses its real current price, so the dollar figures actually add up.
 
-## What's new in 1.5.0
+## 1.5.0
 
 - VibeNotch now watches **OpenAI's Codex** too, right alongside Claude. The one pill follows whatever you're working in — switch to Codex and it turns teal, shows **GPT-5.5**, and adds a chip for how hard it's thinking.
 - No login or setup needed for Codex — it's all read from files already on your Mac. The **percentage** you've used (5-hour and 7-day, with reset times) is the exact figure OpenAI reports.
 - One honest note: the Codex **dollar amount** is our own estimate from your token counts, so treat it as a ballpark, not a bill. The percentage is exact.
 
-## What's new in 1.4.0
+## 1.4.0
 
 - The little dots that tell you Claude is working now look exactly the same whether you're peeking at the pill or have the full card open.
 - A small note in Settings now tells you, in plain words, whether VibeNotch can see your Claude login — so you instantly know if the number you're looking at is the real one or just a guess.

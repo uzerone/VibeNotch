@@ -38,6 +38,13 @@ else
 fi
 echo "    architectures: $(lipo -archs "$APP_DIR/Contents/MacOS/$BIN_NAME" 2>/dev/null || echo unknown)"
 
+if [ -f icon/AppIcon.icns ]; then
+    echo "==> Bundling AppIcon.icns"
+    cp icon/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+else
+    echo "==> WARNING: icon/AppIcon.icns missing — app will ship without an icon. Run scripts/build-appicon.sh to generate it."
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
