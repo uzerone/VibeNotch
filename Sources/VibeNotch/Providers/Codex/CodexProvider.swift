@@ -92,9 +92,6 @@ final class CodexProvider: UsageProvider {
             if mostRecent == nil || mtime > mostRecent!.1 {
                 mostRecent = (url, mtime)
             }
-            if now.timeIntervalSince(mtime) < activeThreshold {
-                snap.activeSessions += 1
-            }
 
             // Cache hit: file unchanged. Its plan window persists in `filePlan`.
             if let cached = fileCache[url], cached.size == size, cached.mtime == mtime {
@@ -154,7 +151,14 @@ final class CodexProvider: UsageProvider {
             }
         }
 
-        snap.lastActivity = mostRecent?.1
+        // Drive activity off the newest parsed token_count entry, not file
+        // mtime (which bumps on any write). See ClaudeProvider for the full
+        // rationale. `mostRecent` (mtime) still selects the tail to read.
+        let lastEntryTs = allEntries.map(\.ts).max()
+        snap.lastActivity = lastEntryTs
+        if let ts = lastEntryTs, now.timeIntervalSince(ts) < activeThreshold {
+            snap.activeSessions = 1
+        }
 
         // Today's totals — deltas are already unique per turn, no dedup needed.
         for e in allEntries where e.ts >= startOfToday {
@@ -176,8 +180,8 @@ final class CodexProvider: UsageProvider {
         // Plan-%: authoritative, from the newest rate_limits seen.
         if latestPrimary != nil || latestSecondary != nil {
             snap.planUsage = PlanUsage(
-                fiveHour: latestPrimary.map { budget($0.window) },
-                sevenDay: latestSecondary.map { budget($0.window) },
+                fiveHour: latestPrimary.map { budget($0.window, now: now) },
+                sevenDay: latestSecondary.map { budget($0.window, now: now) },
                 sevenDayOpus: nil,
                 sevenDaySonnet: nil,
                 fetchedAt: planFetchedAt ?? now
@@ -219,8 +223,16 @@ final class CodexProvider: UsageProvider {
         filePlan[url] = (ts, primary ?? prev?.primary, secondary ?? prev?.secondary)
     }
 
-    private func budget(_ w: CodexRateWindow) -> PlanBudget {
-        PlanBudget(utilization: w.usedPercent / 100, resetsAt: w.resetsAt)
+    /// Converts a rate-limit window into a budget. If the window's reset time
+    /// has already passed, the last-seen utilization is stale (the limit rolled
+    /// over) and we report 0 rather than republishing a full bar that no longer
+    /// reflects reality — the next live token_count event will refresh it with
+    /// the post-reset figure.
+    private func budget(_ w: CodexRateWindow, now: Date) -> PlanBudget {
+        if let reset = w.resetsAt, reset <= now {
+            return PlanBudget(utilization: 0, resetsAt: nil)
+        }
+        return PlanBudget(utilization: w.usedPercent / 100, resetsAt: w.resetsAt)
     }
 
     // MARK: - Block
@@ -259,12 +271,32 @@ final class CodexProvider: UsageProvider {
     // MARK: - Parsing
 
     /// Resolves a session's model (stable per file) by scanning its tail for the
-    /// latest `turn_context.model`, falling back to a cached value or the
-    /// default. Cheap; the tail read is reused by `tailInfo`.
+    /// latest `turn_context.model`, falling back to a cached value, a one-time
+    /// head scan, then the default.
+    ///
+    /// The head scan matters because the model can sit beyond the fixed-size
+    /// tail window: Codex writes very large lines (a single `session_meta` is
+    /// ~37KB), so a long session whose last `turn_context` is >64KB from EOF
+    /// would otherwise resolve to the default and misprice the whole file. The
+    /// model is set in an early `turn_context`/`session_meta`, so the head is
+    /// the reliable place to find it. Result is cached in `fileModel`, so the
+    /// head is read at most once per session file.
     private func resolveModel(url: URL, size: UInt64, mtime: Date) -> String {
         if let m = tailInfo(at: url, size: size, mtime: mtime)?.model { fileModel[url] = m; return m }
         if let cached = fileModel[url] { return cached }
+        if let m = modelFromHead(url: url) { fileModel[url] = m; return m }
         return CodexParsing.defaultModel
+    }
+
+    /// Scans the start of a session file for the model id, for the case where
+    /// the tail window missed it. Takes the first `turn_context.model` found.
+    private func modelFromHead(url: URL) -> String? {
+        guard let lines = JSONLScanner.headLines(url: url) else { return nil }
+        for line in lines {
+            guard let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
+            if let m = CodexParsing.model(fromTurnContext: obj) { return m }
+        }
+        return nil
     }
 
     private func parseAppended(url: URL,

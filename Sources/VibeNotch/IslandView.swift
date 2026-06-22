@@ -155,6 +155,22 @@ struct IslandView: View {
         return false
     }
 
+    /// Arms (or clears) the notch-mode FINISH auto-dismiss window. Centralized
+    /// so it can run on the `isAwaitingDecision` transition *and* whenever the
+    /// banner first becomes eligible without a transition — on view appear, or
+    /// when switching into notch placement while already awaiting. Without this,
+    /// a state that was already true (no `onChange` fires) would never arm the
+    /// timer and the FINISH banner would be silently suppressed.
+    private func armFinishTimerIfNeeded() {
+        guard monitor.snapshot.isAwaitingDecision else { finishVisibleUntil = nil; return }
+        guard finishVisibleUntil == nil else { return }   // already armed
+        let until = Date().addingTimeInterval(Self.finishAutoDismissSeconds)
+        finishVisibleUntil = until
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.finishAutoDismissSeconds + 0.05) {
+            if finishVisibleUntil == until { finishVisibleUntil = nil }
+        }
+    }
+
     private var size: CGSize {
         let docked = geometry.hasPhysicalNotch && !isFreeMove
         if expanded { return geometry.expandedSize(dockedUnderNotch: docked) }
@@ -246,7 +262,7 @@ struct IslandView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.ccTheme, t)
-        .onAppear { updateHitArea() }
+        .onAppear { updateHitArea(); armFinishTimerIfNeeded() }
         .onChange(of: visible) { _ in updateHitArea() }
         .onChange(of: expanded) { _ in updateHitArea() }
         .onChange(of: monitor.snapshot.hasActivity) { _ in updateHitArea() }
@@ -258,17 +274,11 @@ struct IslandView: View {
         // flips true. Schedule a delayed re-render so the dropdown
         // collapses cleanly when the window passes — without needing
         // UsageMonitor to tick at exactly the right moment.
-        .onChange(of: monitor.snapshot.isAwaitingDecision) { isAwait in
-            if isAwait {
-                let until = Date().addingTimeInterval(Self.finishAutoDismissSeconds)
-                finishVisibleUntil = until
-                DispatchQueue.main.asyncAfter(deadline: .now() + Self.finishAutoDismissSeconds + 0.05) {
-                    if finishVisibleUntil == until { finishVisibleUntil = nil }
-                }
-            } else {
-                finishVisibleUntil = nil
-            }
-        }
+        .onChange(of: monitor.snapshot.isAwaitingDecision) { _ in armFinishTimerIfNeeded() }
+        // Re-arm when entering notch placement while already awaiting — the
+        // snapshot didn't transition, so the line above wouldn't fire.
+        .onChange(of: isFreeMove) { _ in armFinishTimerIfNeeded() }
+        .onChange(of: geometry.hasPhysicalNotch) { _ in armFinishTimerIfNeeded() }
         // Smart animation — every state change in the snapshot interpolates
         // through the same spring as hover/expand. Chips appearing, lights
         // hiding when work starts, model swaps mid-session, dropdown text
@@ -429,13 +439,21 @@ struct IslandView: View {
         // otherwise leak into the label as "Fable 5[1m]". The 1M state is
         // already surfaced separately by the "1M" trait chip.
         let base = m.split(separator: "[").first.map(String.init) ?? m
-        let parts = base.replacingOccurrences(of: "claude-", with: "").split(separator: "-")
-        // e.g. ["opus", "4", "7"] → "Opus 4.7"
-        guard let family = parts.first.map(String.init) else { return m }
+        let parts = base.replacingOccurrences(of: "claude-", with: "").split(separator: "-").map(String.init)
+        // Find the family by name, not position: the version can lead the id
+        // ("claude-3-5-sonnet" → Sonnet 3.5) or trail it ("claude-opus-4-7" →
+        // Opus 4.7). The family is the alphabetic token; the numeric tokens
+        // around it are version components (a long run is a date stamp).
+        guard let fi = parts.firstIndex(where: { $0.contains(where: \.isLetter) }) else { return m }
+        let family = parts[fi]
         let nameCap = family.prefix(1).uppercased() + family.dropFirst()
-        if parts.count >= 3 { return "\(nameCap) \(parts[1]).\(parts[2])" }
-        if parts.count == 2 { return "\(nameCap) \(parts[1])" }
-        return nameCap
+        // Version digits are the short numeric tokens adjacent to the family,
+        // in id order, excluding date stamps (>= 3 digits, e.g. 20241022).
+        let versionParts = parts.enumerated()
+            .filter { $0.offset != fi && $0.element.allSatisfy(\.isNumber) && $0.element.count < 3 }
+            .map(\.element)
+        if versionParts.isEmpty { return nameCap }
+        return "\(nameCap) \(versionParts.joined(separator: "."))"
     }
 
     /// Clean labels for OpenAI's Codex CLI lineup. Codex-suffixed coding
@@ -608,14 +626,6 @@ struct IslandView: View {
 
     /// Color encoding for the right-side dot based on 5h block progress.
     /// gray (no block) → cyan (early) → indigo (mid) → orange (almost spent).
-    private func blockDotColor() -> Color {
-        guard monitor.snapshot.blockStart != nil else { return .gray.opacity(0.5) }
-        let p = blockProgress()
-        if p < 0.5 { return Color(red: 0.55, green: 0.85, blue: 1.0) }       // cyan
-        if p < 0.8 { return Color(red: 0.55, green: 0.55, blue: 1.0) }       // indigo
-        return Color(red: 1.0, green: 0.6, blue: 0.25)                       // orange
-    }
-
     private var expandedContent: some View {
         let t = theme
         // Outer rhythm follows an 8pt grid: 16 between sections, 8 within.
@@ -845,47 +855,6 @@ struct IslandView: View {
     }
 
 
-    private func miniStat(icon: String, label: String, value: String, sub: String) -> some View {
-        let t = theme
-        return HStack(spacing: 10) {
-            // Activity-badge styled icon — gradient fill + hairline stroke
-            // produces a sense of material depth without leaning on
-            // macOS-26-only `.glassEffect()`.
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(t.text(.secondary))
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle().fill(
-                        LinearGradient(
-                            colors: [t.chrome(0.14), t.chrome(0.05)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
-                )
-                .overlay(
-                    Circle().strokeBorder(t.chrome(0.10), lineWidth: 0.5)
-                )
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .tracking(0.5)
-                    .foregroundColor(t.text(.tertiary))
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(value)
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .foregroundColor(t.text(.primary))
-                        .monospacedDigit()
-                    Text(sub)
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundColor(t.text(.tertiary))
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     /// Fraction of the 5h block elapsed. Used for the progress bar.
     private func blockProgress() -> Double {
         guard let start = monitor.snapshot.blockStart else { return 0 }
@@ -904,10 +873,6 @@ struct IslandView: View {
         if s < 60 { return "\(s)s ago" }
         if s < 3600 { return "\(s / 60)m ago" }
         return "\(s / 3600)h ago"
-    }
-
-    private func blockEndsString() -> String {
-        return blockResetClockString()
     }
 
     /// Actual clock time when the current 5h block resets (e.g. "8:23 AM",
@@ -974,6 +939,32 @@ struct ModelSplitBar: View {
     let title: String
     let segments: [Segment]
 
+    /// Lays out segment widths so the bar never overflows its track. The naïve
+    /// `width * fraction` overflows once the (n-1) inter-segment gaps and the
+    /// per-segment minimum are added in. Here we lay out within the width that
+    /// remains after spacing, apply a `minWidth` floor, then rescale the result
+    /// down if the floors pushed the total back over budget.
+    static func segmentWidths(fractions: [Double],
+                              available: CGFloat,
+                              spacing: CGFloat,
+                              minWidth: CGFloat = 2) -> [CGFloat] {
+        guard !fractions.isEmpty else { return [] }
+        let usable = max(0, available - spacing * CGFloat(fractions.count - 1))
+        let total = fractions.reduce(0, +)
+        // Distribute `usable` by fraction, flooring each at `minWidth`.
+        var widths = fractions.map { f -> CGFloat in
+            let raw = total > 0 ? usable * CGFloat(f / total) : usable / CGFloat(fractions.count)
+            return max(minWidth, raw)
+        }
+        // The floors can push the sum back over `usable`; rescale to fit.
+        let sum = widths.reduce(0, +)
+        if sum > usable, sum > 0 {
+            let scale = usable / sum
+            widths = widths.map { $0 * scale }
+        }
+        return widths
+    }
+
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
@@ -1002,11 +993,16 @@ struct ModelSplitBar: View {
                 }
             }
             GeometryReader { geo in
-                HStack(spacing: 1) {
-                    ForEach(segments) { seg in
+                let spacing: CGFloat = 1
+                let widths = Self.segmentWidths(
+                    fractions: segments.map(\.fraction),
+                    available: geo.size.width,
+                    spacing: spacing)
+                HStack(spacing: spacing) {
+                    ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
                         Capsule()
                             .fill(seg.color)
-                            .frame(width: max(2, geo.size.width * seg.fraction))
+                            .frame(width: widths[idx])
                     }
                 }
             }

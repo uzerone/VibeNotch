@@ -23,20 +23,23 @@ struct CodexPricing {
     /// but not in the public pricing table) — the token *count* is always
     /// exact, only the $ estimate inherits a sibling's rate.
     ///
-    /// Order matters: checks run most-specific-first because the ids are
-    /// substrings of one another (`gpt-5.4-mini` contains `gpt-5.4`;
-    /// `gpt-5.3-codex-spark` contains `codex`; `gpt-5.5-pro` contains `5.5`).
+    /// Order matters: version-family checks run first (newest to oldest), then
+    /// the `codex` suffix. The ids are substrings of one another
+    /// (`gpt-5.4-mini` contains `gpt-5.4`; `gpt-5.5-pro` contains `5.5`), and
+    /// `codex` must come LAST so a future `gpt-5.5-codex`/`gpt-5.4-codex` is
+    /// priced by its family rather than caught by the gpt-5.3-codex rate.
     ///
     /// `bigContext` selects the gpt-5.5 long-context tier (>272K input tokens:
     /// 2x input / 1.5x output). Other models don't list a long-context tier.
     static func forModel(_ model: String, bigContext: Bool) -> CodexPricing {
         let m = model.lowercased()
 
-        // Codex-suffixed coding models (gpt-5.3-codex, -codex-spark). The
-        // spark research-preview variant has no public price → codex rate. ✓5.3
-        if m.contains("codex") {
-            return .init(input: 1.75, cachedInput: 0.175, output: 14.0)
-        }
+        // Version-family checks run BEFORE the codex-suffix check: a future
+        // coding variant of a newer family (e.g. `gpt-5.5-codex`,
+        // `gpt-5.4-codex`) contains "codex" but should be priced at its own
+        // family's rate, not silently fall to the gpt-5.3-codex rate below.
+        // The codex rate is specifically the gpt-5.3-codex / -spark rate.
+
         // gpt-5.5 family.
         if m.contains("5.5") {
             if m.contains("pro") {          // no cached-input discount ✓
@@ -57,6 +60,11 @@ struct CodexPricing {
         // estimate at the gpt-5.4 base rate, its nearest listed sibling.
         if m.contains("5.2") {
             return .init(input: 2.50, cachedInput: 0.25, output: 15.0)  // est.
+        }
+        // gpt-5.3-codex / -codex-spark coding models (no newer family matched
+        // above). The spark research-preview variant has no public price. ✓5.3
+        if m.contains("codex") {
+            return .init(input: 1.75, cachedInput: 0.175, output: 14.0)
         }
 
         // Unknown / future model — default to gpt-5.5 (Codex's recommended

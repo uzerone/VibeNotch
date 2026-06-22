@@ -131,7 +131,11 @@ final class ClaudePlanFetcher {
         // `resets_at` can be an ISO string or a Unix epoch (sometimes seconds,
         // sometimes milliseconds).
         let resets: Date?
-        if let s = d["resets_at"] as? String { resets = Self.iso.date(from: s) }
+        if let s = d["resets_at"] as? String {
+            // `iso` requires fractional seconds; fall back to whole-second ISO
+            // so a reset on an exact second doesn't drop the countdown.
+            resets = Self.iso.date(from: s) ?? Self.isoWhole.date(from: s)
+        }
         else if let n = d["resets_at"] as? Double {
             resets = Date(timeIntervalSince1970: n > 1e11 ? n / 1000 : n)
         } else if let n = d["resets_at"] as? Int {
@@ -154,6 +158,14 @@ final class ClaudePlanFetcher {
     private static let iso: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    /// Fallback for `resets_at` values that land on a whole second (no `.NNN`),
+    /// which the fractional-seconds formatter above rejects.
+    private static let isoWhole: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
         return f
     }()
 

@@ -104,14 +104,17 @@ final class ClaudeProvider: UsageProvider {
             if mostRecent == nil || mtime > mostRecent!.1 {
                 mostRecent = (url, mtime)
             }
-            if now.timeIntervalSince(mtime) < activeThreshold {
-                snap.activeSessions += 1
-            }
 
-            // Cache hit: file unchanged since last poll.
-            if let cached = fileCache[url],
+            // Cache hit: file unchanged since last poll. Still re-apply the
+            // prune — `pruneCutoff` advances with wall-clock (and across
+            // midnight), so an unchanged-but-recent file can hold entries that
+            // have since aged out. Drop them from the cache so the in-memory
+            // window stays consistent with the parse path.
+            if var cached = fileCache[url],
                cached.size == size,
                cached.mtime == mtime {
+                cached.entries.removeAll { $0.ts < pruneCutoff }
+                fileCache[url] = cached
                 allEntries.append(contentsOf: cached.entries)
                 continue
             }
@@ -151,10 +154,18 @@ final class ClaudeProvider: UsageProvider {
             }
         }
 
-        // The most-recently-modified file's mtime drives the "auto" provider
-        // switch — set lastActivity unconditionally (not just within the 30s
-        // active gate) so the coordinator can always compare providers.
-        snap.lastActivity = mostRecent?.1
+        // Drive the "auto" provider switch off the newest *billed entry*, not
+        // the file mtime: an mtime bumps on any write (user line, summary,
+        // non-assistant event), which would let a provider win the merge and
+        // claim activity "now" with zero new cost. `lastActivity` is the latest
+        // parsed assistant turn; `activeSessions` counts only sessions with a
+        // turn inside the active window. `mostRecent` (mtime) is still used to
+        // pick which file's tail to read for the current model/work state.
+        let lastEntryTs = allEntries.map(\.ts).max()
+        snap.lastActivity = lastEntryTs
+        if let ts = lastEntryTs, now.timeIntervalSince(ts) < activeThreshold {
+            snap.activeSessions = 1
+        }
 
         // Aggregate today's totals with global dedup. Same (msg.id, requestId)
         // can appear up to ~17x across files (session resume/edit/branch);

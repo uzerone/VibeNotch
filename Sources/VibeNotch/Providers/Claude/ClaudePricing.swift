@@ -38,9 +38,13 @@ struct ModelPricing {
         if m.contains("fable") || m.contains("mythos") { return 10 }
 
         if m.contains("opus") {
-            // Opus 4.5 cut the rate to $5; Opus 4 / 4.1 were $15.
-            if m.contains("opus-4-1") || m.contains("opus-4-20") { return 15 }
-            return 5   // 4.5 / 4.6 / 4.7 / 4.8 and the bare "opus" alias
+            // Opus 4.5 cut the rate to $5; Opus 4.0–4.4 were $15. Match on the
+            // minor version at a digit boundary rather than a bare substring,
+            // so a future id like "opus-4-10" isn't caught by an "opus-4-1"
+            // prefix and mispriced at the old 3× rate (the prior overcharge
+            // bug's exact shape). Unparsed/bare "opus" → current $5 tier.
+            if let minor = opusMinorVersion(m), minor < 5 { return 15 }
+            return 5
         }
 
         if m.contains("haiku") {
@@ -50,5 +54,27 @@ struct ModelPricing {
 
         // Sonnet (3.5 / 4 / 4.5 / 4.6) and any unrecognized id default here.
         return 3
+    }
+
+    /// Extracts the Opus minor version from ids shaped `opus-<major>-<minor>`
+    /// (e.g. "claude-opus-4-8" → 8, "claude-opus-4-1-20250805" → 1). The bare
+    /// "claude-opus-4-20250514" (Opus 4.0, where the trailing group is a date,
+    /// not a minor) resolves to minor 0 via the major-only fallback. Returns
+    /// nil when no `opus-<digit>` group is present (bare "opus" alias).
+    private static func opusMinorVersion(_ m: String) -> Int? {
+        guard let r = m.range(of: "opus-") else { return nil }
+        let rest = m[r.upperBound...]
+        // Split the version tail into numeric groups: "4-8" → [4, 8];
+        // "4-20250514" → [4, 20250514]; "4-1-20250805" → [4, 1, 20250805].
+        let groups = rest.split(separator: "-").prefix { $0.allSatisfy(\.isNumber) }
+            .compactMap { Int($0) }
+        guard let major = groups.first, major == 4 else {
+            // Opus 5+ (or any non-4 major) is on the current rate tier.
+            return groups.first
+        }
+        // A second group is the minor only when it's a small number; a long
+        // run of digits is a date stamp (Opus 4.0), so treat minor as 0.
+        if groups.count >= 2, groups[1] < 100 { return groups[1] }
+        return 0
     }
 }

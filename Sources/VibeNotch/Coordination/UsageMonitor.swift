@@ -98,7 +98,15 @@ final class UsageMonitor: ObservableObject {
                 // Re-apply the out-of-band Claude plan-% (refreshed on a
                 // separate, slower timer) so the file poll doesn't drop it.
                 if w.provider == .claude {
-                    if let p = self.lastClaudePlan { w.planUsage = p }
+                    // Don't republish a plan reading whose window has already
+                    // reset server-side — after a fetch failure `lastClaudePlan`
+                    // is intentionally kept (stale > nothing), but once its
+                    // `resetsAt` is in the past the utilization and clock are
+                    // simply wrong, so drop it rather than drive the pill from
+                    // an expired window.
+                    if let p = self.lastClaudePlan, !p.isExpired(asOf: now) {
+                        w.planUsage = p
+                    }
                     w.planUsageError = self.lastClaudePlanError
                 }
                 self.snapshot = w

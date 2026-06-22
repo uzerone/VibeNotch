@@ -16,4 +16,14 @@ struct PlanUsage: Equatable {
     var sevenDayOpus: PlanBudget?   // Opus-only weekly (Claude only)
     var sevenDaySonnet: PlanBudget? // Sonnet-only weekly (Claude only)
     var fetchedAt: Date
+
+    /// True once the five-hour window's reset time has passed: the reading is
+    /// stale and its utilization no longer reflects the live block. Used to
+    /// stop republishing a cached plan-% after the window has rolled over.
+    /// Buckets without a `resetsAt` (or no five-hour bucket) are never treated
+    /// as expired here — there's nothing to time them out against.
+    func isExpired(asOf now: Date) -> Bool {
+        guard let reset = fiveHour?.resetsAt else { return false }
+        return reset <= now
+    }
 }

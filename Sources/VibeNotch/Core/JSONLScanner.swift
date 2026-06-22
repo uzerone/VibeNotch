@@ -84,6 +84,29 @@ enum JSONLScanner {
         return false
     }
 
+    /// Reads the first `maxBytes` of `url` and returns its complete lines in
+    /// file order (oldest-first). Used as a fallback for tail scans that come
+    /// up empty: a session's model is set in an early `turn_context` /
+    /// `session_meta` line, which can sit far enough from EOF (Codex writes
+    /// very large lines) that a fixed-size tail window misses it. The final,
+    /// possibly-incomplete line is dropped to avoid feeding a truncated JSON.
+    static func headLines(url: URL, maxBytes: UInt64 = 65536) -> [Data]? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: Int(maxBytes)), !head.isEmpty else { return nil }
+
+        var lines: [Data] = []
+        var lineStart = 0
+        for i in 0..<head.count {
+            if head[i] == 0x0A {
+                if i > lineStart { lines.append(head.subdata(in: lineStart..<i)) }
+                lineStart = i + 1
+            }
+        }
+        // Trailing bytes after the last newline are an incomplete line — skip.
+        return lines
+    }
+
     /// Reads the last `maxBytes` of `url` and returns its lines in
     /// most-recent-first order. Used for tail scans (current model / work
     /// state) that only care about the end of the file.

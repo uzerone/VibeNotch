@@ -188,8 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let size = geo.expandedSize
 
         let origin: CGPoint
-        if let saved = PlacementStore.shared.freeOrigin,
-           NSScreen.screens.contains(where: { $0.frame.intersects(NSRect(origin: saved, size: size)) }) {
+        // Accept the saved origin only if the pill comes back genuinely
+        // visible. `intersects` is true for a 1pt sliver, so a pill left
+        // mostly off-screen (or stranded by a resized/removed monitor) would
+        // restore unusable. Require its center to land on a screen — a simple,
+        // robust "is it really on a display" test — else recenter.
+        let savedRect = PlacementStore.shared.freeOrigin.map { NSRect(origin: $0, size: size) }
+        if let saved = PlacementStore.shared.freeOrigin, let rect = savedRect,
+           NSScreen.screens.contains(where: { $0.frame.contains(CGPoint(x: rect.midX, y: rect.midY)) }) {
             origin = saved
         } else {
             let f = screen.frame
@@ -273,15 +279,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return IslandGeometry(notchWidth: notchW,
                               notchHeight: notchH,
                               screenWidth: screen.frame.width)
-    }
-
-    private func currentTargetScreen() -> NSScreen? {
-        if let builtIn = NSScreen.screens.first(where: { $0.isBuiltIn }) { return builtIn }
-        let savedID = UserDefaults.standard.string(forKey: externalScreenPrefKey)
-        if let savedID, let s = NSScreen.screens.first(where: { $0.persistentID == savedID }) {
-            return s
-        }
-        return NSScreen.screens.first
     }
 
     private func positionTopCenter(on screen: NSScreen, size: NSSize, animated: Bool) {

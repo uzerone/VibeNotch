@@ -19,6 +19,9 @@ DerivedData/
 *.log
 /tmp/
 
+# Claude Code local state
+/.claude/
+
 # Build artifacts — users compile their own .dmg via scripts/build-dmg.sh
 *.dmg
 

@@ -12,6 +12,13 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
+## What's new in 1.5.3
+
+- The pill is better at showing when Claude or Codex is working, and when it's done.
+- More accurate cost numbers for Codex.
+- The pill no longer gets stuck off-screen — it always comes back where you can see it.
+- Plus small fixes and tidying.
+
 ## What's new in 1.5.2
 
 - VibeNotch finally has a **real app icon**. It runs quietly in the background with no Dock icon, but when you go looking for it — in Spotlight search or your Applications folder — it used to be a blank placeholder. Now it's the friendly notch face you see at the top of this page.
