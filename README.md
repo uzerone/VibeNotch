@@ -4,7 +4,7 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — in active development.** VibeNotch is a personal-scale project that's still being shaped. Expect breaking layout changes, occasional bugs, and feature churn between releases. Use it, file issues, but don't depend on it as a stable measurement of your Anthropic billing.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.5.3). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
@@ -19,7 +19,7 @@ Requires macOS 13+. **No pre-built binary** — build from source with the scrip
 - The pill no longer gets stuck off-screen — it always comes back where you can see it.
 - Plus small fixes and tidying.
 
-## What's new in 1.5.2
+## 1.5.2
 
 - VibeNotch finally has a **real app icon**. It runs quietly in the background with no Dock icon, but when you go looking for it — in Spotlight search or your Applications folder — it used to be a blank placeholder. Now it's the friendly notch face you see at the top of this page.
 
