@@ -7,8 +7,8 @@ struct SettingsView: View {
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
     @State private var loginError: String?
     @State private var keychainGranted: Bool = ClaudePlanFetcher.hasOAuthToken
-    @ObservedObject private var appearance: AppearanceStore = .shared
     @ObservedObject private var placement: PlacementStore = .shared
+    @ObservedObject private var expandTrigger: ExpandTriggerStore = .shared
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
@@ -64,24 +64,20 @@ struct SettingsView: View {
 
             Divider().background(theme.chrome(0.08))
 
-            // Appearance picker. 5 options: Auto/Dark/Light + two glass
-            // variants (clear material vs. soft white tint). "Auto" follows
-            // the macOS system Dark/Light setting.
+            // Expand-trigger picker: open the stats card on hover, or on click.
             VStack(alignment: .leading, spacing: 8) {
-                Text("Appearance")
+                Text("Expand")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .tracking(0.5)
                     .foregroundColor(theme.text(.tertiary))
                 HStack(spacing: 3) {
-                    ForEach(Appearance.allCases) { option in
-                        AppearanceChip(
+                    ForEach(ExpandTrigger.allCases) { option in
+                        ExpandChip(
                             option: option,
-                            selected: appearance.current == option,
+                            selected: expandTrigger.current == option,
                             theme: theme
                         ) {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                appearance.current = option
-                            }
+                            expandTrigger.current = option
                         }
                     }
                 }
@@ -95,7 +91,7 @@ struct SettingsView: View {
             // visually separate from primary toggles.
             HStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    Text("Launch at login")
+                    Text("Run at login")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.secondary))
                     GreenSwitch(isOn: $launchAtLogin)
@@ -123,7 +119,7 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Capsule().fill(theme.chrome(0.08)))
+                .chromeBackground(in: Capsule(), fill: theme.chrome(0.08))
                 .help(keychainGranted
                     ? "Keychain access granted — Claude plan-usage % is the exact figure from Anthropic. (Codex plan-% comes from local ~/.codex logs — no keychain needed.)"
                     : "No Keychain access — run `claude /login` or relaunch VibeNotch and click Always Allow when prompted. (This is for Claude only; Codex needs no keychain.)")
@@ -131,7 +127,7 @@ struct SettingsView: View {
                     keychainGranted = ClaudePlanFetcher.hasOAuthToken
                 }
                 Spacer(minLength: 8)
-                Button {
+                Button(role: .destructive) {
                     NSApp.terminate(nil)
                 } label: {
                     Text("Quit")
@@ -155,47 +151,8 @@ struct SettingsView: View {
     }
 }
 
-/// One segment of the appearance picker. Selected state shows a filled chip
-/// in the accent color; unselected is a translucent chrome chip.
-private struct AppearanceChip: View {
-    let option: Appearance
-    let selected: Bool
-    let theme: Theme
-    let action: () -> Void
-
-    @State private var hover = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: option.systemImage)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(option.label)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .foregroundColor(selected ? .white : theme.text(.secondary))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(
-                    selected
-                        ? theme.accentStart
-                        : theme.chrome(hover ? 0.14 : 0.08)
-                )
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(option.help)
-    }
-}
-
-/// Two-option chip for the Placement picker. Same visual treatment as
-/// `AppearanceChip` so the Settings panel reads as one consistent control.
+/// Two-option chip for the Placement picker. Same visual treatment as the
+/// Expand chip so the Settings panel reads as one consistent control.
 private struct PlacementChip: View {
     let option: Placement
     let selected: Bool
@@ -220,11 +177,43 @@ private struct PlacementChip: View {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous).fill(
-                    selected
-                        ? theme.accentStart
-                        : theme.chrome(hover ? 0.14 : 0.08)
-                )
-            )
+                    selected ? theme.accentStart : theme.chrome(hover ? 0.14 : 0.08)))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(option.help)
+    }
+}
+
+/// Two-option chip for the Expand-trigger picker (Hover / Click). Same visual
+/// treatment as the Placement / Appearance chips so the panel reads as one
+/// consistent set of controls.
+private struct ExpandChip: View {
+    let option: ExpandTrigger
+    let selected: Bool
+    let theme: Theme
+    let action: () -> Void
+
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: option.systemImage)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(option.label)
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .foregroundColor(selected ? .white : theme.text(.secondary))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(
+                    selected ? theme.accentStart : theme.chrome(hover ? 0.14 : 0.08)))
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)

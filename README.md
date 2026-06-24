@@ -4,15 +4,23 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.5.3). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.5.4). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
-Hidden when idle. Drops down a status line while Claude or Codex is running. Hover to expand the stats card.
+Hidden when idle. Drops down a status line while Claude or Codex is running. Hover to expand the stats card. Or pin it to the system menu bar instead — your pick.
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.5.3
+## What's new in 1.5.4
+
+- **Now lives in the menu bar too.** Don't want the pill near the notch? You can now show your usage right up in the menu bar instead — like "23% · 8:45 PM" — and click it to see the full details. Choose where it sits in Settings: the notch, anywhere on screen, or the menu bar.
+- **Open it your way.** Pick whether the details card opens when you hover over it, or only when you click. Whatever feels right to you.
+- **Easier to read at a glance.** The card is tidier, with clearer sections, and now shows how long until your usage resets — "2h 13m left · resets 8:45 PM" — right up front.
+- **Always dark.** VibeNotch now sticks to one clean dark look, all the time.
+- **Asks for permission just once.** After you allow access the first time, restarting your Mac won't make it ask again.
+
+## 1.5.3
 
 - The pill is better at showing when Claude or Codex is working, and when it's done.
 - More accurate cost numbers for Codex.
