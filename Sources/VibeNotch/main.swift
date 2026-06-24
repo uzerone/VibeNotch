@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let hitArea = HitArea()
     private var mouseMonitor: Any?
     private var lastCursorInside = false
+    private lazy var menuBar = MenuBarController(monitor: monitor)
 
     private let externalScreenPrefKey = "VibeNotch.preferredExternalScreen"
 
@@ -154,6 +155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// restores the user's saved origin (or centers on first switch).
     private func applyPlacement(initial: Bool) {
         guard let win = window else { return }
+        // The menu-bar item only exists in `.menuBar`; tear it down whenever
+        // we're in any other mode so switching back to the pill is clean.
+        if PlacementStore.shared.mode != .menuBar {
+            menuBar.deactivate()
+        }
         switch PlacementStore.shared.mode {
         case .notch:
             // Notch mode needs the near-shield level so the pill overlays
@@ -161,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()) - 1)
             win.isMovableByWindowBackground = false
             dismissChooser()
+            // `rebindToCurrentScreen` → `anchor` re-shows the window (it may
+            // have been ordered out by a prior menu-bar mode).
             rebindToCurrentScreen(initial: initial)
         case .freeMove:
             // Free-move mode: ordinary floating window. `.floating` keeps it
@@ -170,7 +178,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.level = .floating
             win.isMovableByWindowBackground = true
             dismissChooser()
+            // `placeFreeMove` re-shows the window if it was ordered out.
             placeFreeMove()
+        case .menuBar:
+            // Menu-bar mode: no floating pill at all. Hide the window and put
+            // a text item in the system menu bar instead.
+            dismissChooser()
+            win.orderOut(nil)
+            menuBar.activate()
         }
     }
 

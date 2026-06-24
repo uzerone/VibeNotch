@@ -173,12 +173,23 @@ final class ClaudePlanFetcher {
 
     /// Whether the Claude Code OAuth token is currently readable from the
     /// Keychain. Used by the Settings panel to surface whether the user
-    /// granted Keychain access (or hasn't run `claude /login` yet). The
-    /// cached copy counts — if the cache holds a token, we *had* access at
-    /// some point and don't need a fresh prompt to claim the answer is yes.
+    /// granted Keychain access (or hasn't run `claude /login` yet).
+    ///
+    /// Prefer the VibeNotch-owned cache: once it holds a token we *had* access
+    /// and reading our own item never prompts. We only fall back to reading
+    /// Claude Code's entry when the cache is genuinely empty (first launch,
+    /// pre-`claude /login`) — and even then we mirror the result into the
+    /// cache so this question never reaches Claude Code's keychain again. That
+    /// keeps the Settings panel from re-triggering the ACL prompt on every
+    /// open, and after a reboot the cache answers immediately.
     static var hasOAuthToken: Bool {
         let f = ClaudePlanFetcher()
-        return f.cachedToken() != nil || f.readOAuthToken() != nil
+        if f.cachedToken() != nil { return true }
+        if let fresh = f.readOAuthToken() {
+            f.storeCachedToken(fresh)
+            return true
+        }
+        return false
     }
 
     /// Keychain item VibeNotch creates and owns. Reading this entry never
@@ -212,8 +223,16 @@ final class ClaudePlanFetcher {
             kSecAttrService as String: Self.cachedTokenService,
             kSecAttrAccount as String: cachedTokenAccount,
         ]
-        // Upsert: try update first, fall back to add.
-        let attrs: [String: Any] = [kSecValueData as String: data]
+        // Upsert: try update first, fall back to add. Both paths pin
+        // `kSecAttrAccessibleAfterFirstUnlock` so the cache survives a reboot
+        // and is readable on every launch after the first post-boot unlock —
+        // without it, an item could land in a state that's unreadable early
+        // in the session, forcing a fall-back read of Claude Code's own
+        // keychain entry (which is what re-triggers the ACL prompt).
+        let attrs: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+        ]
         let updateStatus = SecItemUpdate(base as CFDictionary, attrs as CFDictionary)
         if updateStatus == errSecItemNotFound {
             var newItem = base

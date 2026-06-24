@@ -56,12 +56,16 @@ struct IslandGeometry: Equatable {
     /// under the notch, we add `notchHeight` so the band hidden behind
     /// the camera housing doesn't eat into the visible card area.
     ///
-    /// Height is sized to fit the Settings panel (header + Placement +
-    /// Appearance + toggle + Quit row); the stats view is shorter and
-    /// just runs with extra breathing room.
+    /// Height is sized to fit the Settings panel (header + Placement + Expand +
+    /// login/Quit row); the pared-down stats view is shorter and just runs with
+    /// extra breathing room.
+    ///
+    /// Width 384: after the dashboard's information diet, 420 left too much
+    /// empty horizontal space, while 384 still comfortably fits the Settings
+    /// bottom row (login toggle + keychain pill + Quit).
     func expandedSize(dockedUnderNotch: Bool) -> CGSize {
         let topBand = dockedUnderNotch ? notchHeight : 0
-        return CGSize(width: 420, height: topBand + 290)
+        return CGSize(width: 384, height: topBand + 300)
     }
 
     /// Convenience for the docked default — used by AppDelegate when
@@ -79,6 +83,7 @@ struct IslandView: View {
     @ObservedObject var hitArea: HitArea
     @ObservedObject var appearance: AppearanceStore = .shared
     @ObservedObject var placement: PlacementStore = .shared
+    @ObservedObject var expandTrigger: ExpandTriggerStore = .shared
 
     @State private var expanded = false
     @State private var showSettings = false
@@ -93,6 +98,10 @@ struct IslandView: View {
     private var geometry: IslandGeometry { config.geometry }
     private var theme: Theme { Theme(resolved: appearance.resolved) }
     private var isFreeMove: Bool { placement.mode == .freeMove }
+
+    /// Whether the card expands on hover (default) or on click. Drives which
+    /// gesture is wired to `expanded` in the body.
+    private var isClickToExpand: Bool { expandTrigger.current == .click }
 
     /// Apple HIG-aligned animation curves. One spring for UI interaction
     /// (hover/expand/settings), one slightly slower for the drop-in/out from
@@ -184,28 +193,35 @@ struct IslandView: View {
             : geometry.idleCornerRadius
     }
 
+    /// The card's background silhouette: a solid fill + a gradient hairline
+    /// edge + layered contact/ambient shadows so it reads as a panel floating
+    /// above the desktop.
+    private func panelBackground(_ t: Theme) -> some View {
+        shape
+            .fill(t.panelFill)
+            .overlay(
+                shape
+                    .strokeBorder(
+                        LinearGradient(colors: [
+                            t.borderTopHighlight,
+                            t.borderBottomShade
+                        ], startPoint: .top, endPoint: .bottom),
+                        lineWidth: 0.5
+                    )
+            )
+            // Layered shadows simulate `backgroundExtensionEffect` —
+            // a tight contact shadow plus a wider ambient halo so the
+            // card reads as floating above the desktop, with its
+            // presence extending past the visible silhouette.
+            .shadow(color: t.shadow.opacity(0.7), radius: 6, y: 2)
+            .shadow(color: t.shadow.opacity(0.45), radius: 24, y: 14)
+    }
+
     var body: some View {
         let t = effectiveTheme
         return VStack(spacing: 0) {
             ZStack {
-                shape
-                    .fill(t.panelFill)
-                .overlay(
-                    shape
-                        .strokeBorder(
-                            LinearGradient(colors: [
-                                t.borderTopHighlight,
-                                t.borderBottomShade
-                            ], startPoint: .top, endPoint: .bottom),
-                            lineWidth: 0.5
-                        )
-                )
-                // Layered shadows simulate `backgroundExtensionEffect` —
-                // a tight contact shadow plus a wider ambient halo so the
-                // card reads as floating above the desktop, with its
-                // presence extending past the visible silhouette.
-                .shadow(color: t.shadow.opacity(0.7), radius: 6, y: 2)
-                .shadow(color: t.shadow.opacity(0.45), radius: 24, y: 14)
+                panelBackground(t)
 
                 if expanded {
                     Group {
@@ -251,11 +267,28 @@ struct IslandView: View {
             .opacity(visible ? 1 : 0)
             .animation(dropSpring, value: visible)
             .onHover { hovering in
+                // Hover-to-expand only. In click mode the cursor entering or
+                // leaving the pill must not change the expanded state — taps
+                // own it there.
+                guard !isClickToExpand else { return }
                 // Hold expanded open while the settings panel is in use, even
                 // if the cursor briefly slips outside the card.
                 if !hovering && showSettings { return }
                 withAnimation(uiSpring) {
                     expanded = hovering
+                }
+            }
+            // Click-to-expand: tapping the pill toggles it. A tap on an inner
+            // control (the gear) is consumed by that control first, so this
+            // only fires for the pill background — collapsing from empty space
+            // works, while the gear still opens Settings. No-op in hover mode.
+            .onTapGesture {
+                guard isClickToExpand else { return }
+                // Leaving Settings open while collapsing would strand the panel;
+                // collapse always returns to the stats face.
+                withAnimation(uiSpring) {
+                    if expanded { showSettings = false }
+                    expanded.toggle()
                 }
             }
             Spacer(minLength: 0)
@@ -424,10 +457,16 @@ struct IslandView: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Pretty display name: "Opus 4.7", "Sonnet 4.6", "Haiku 4.5",
-    /// "GPT-5.5", "GPT-5.4 mini", "Codex 5.3", "Codex 5.3 Spark", etc.
+    /// Pretty display name for the active model — see `displayName(for:)`.
     private var modelDisplayName: String {
-        guard let m = monitor.snapshot.currentModel else { return "—" }
+        Self.displayName(for: monitor.snapshot.currentModel)
+    }
+
+    /// Pretty display name: "Opus 4.7", "Sonnet 4.6", "Haiku 4.5",
+    /// "GPT-5.5", "GPT-5.4 mini", "Codex 5.3", "Codex 5.3 Spark", etc. Static
+    /// so the menu-bar card can format the same name without an `IslandView`.
+    static func displayName(for model: String?) -> String {
+        guard let m = model else { return "—" }
         let lower = m.lowercased()
         // OpenAI / Codex models keep their canonical id (don't run the
         // "claude-" strip + version-split path, which would mangle the names).
@@ -507,9 +546,8 @@ struct IslandView: View {
     }
 
     /// Activity-badge style trait chip, inspired by Apple's Landmarks
-    /// sample. Background is a subtle gradient (tint top → tint-faded
-    /// bottom) with a hairline stroke for material depth — the same
-    /// look the new SwiftUI `.glassEffect()` produces on macOS 26+.
+    /// sample. A tint-gradient capsule with a hairline stroke; the model's hue
+    /// is carried by the fill, the stroke, and the text.
     private func traitChip(_ text: String, help: String) -> some View {
         let tint = ModelDot.colorForModel(monitor.snapshot.currentModel)
         return Text(text)
@@ -517,6 +555,8 @@ struct IslandView: View {
             .tracking(0.5)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
+            // Tint-gradient capsule (top→bottom) with the model hue carried by
+            // the fill, the hairline stroke, and the foreground.
             .background(
                 Capsule().fill(
                     LinearGradient(
@@ -626,9 +666,64 @@ struct IslandView: View {
 
     /// Color encoding for the right-side dot based on 5h block progress.
     /// gray (no block) → cyan (early) → indigo (mid) → orange (almost spent).
+    /// Weekly usage only earns a place on the card once it's high enough to
+    /// matter (≥ 50%). Below that it's noise — the session gauge already tells
+    /// you you're fine. This is the "information diet": surface a metric only
+    /// when it changes a decision.
+    private var weeklyWorthShowing: Bool {
+        guard let seven = monitor.snapshot.planUsage?.sevenDay else { return false }
+        return seven.utilization >= 0.5
+    }
+
+    /// The model split is only informative when more than one family is in
+    /// play. A single-model session is the common case and the split bar just
+    /// restates "100% Opus" — drop it so the card breathes.
+    private var modelSplitWorthShowing: Bool {
+        modelSplitSegments.count > 1
+    }
+
+    /// Uniform section caption — small, tracked, tertiary. Every block (SESSION,
+    /// TODAY, the model split) leads with one, so the eye navigates the card by
+    /// its headings instead of by guessing the hierarchy from number sizes.
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold, design: .rounded))
+            .tracking(0.6)
+            .foregroundColor(theme.text(.tertiary))
+    }
+
+    /// Hairline rule between sections — same faint chrome line the Settings
+    /// panel uses, so a divided card reads consistently with the rest of the UI.
+    private var sectionDivider: some View {
+        Divider().background(theme.chrome(0.08))
+    }
+
+    /// The reset row, sitting directly under the session gauge — a clock glyph,
+    /// the human countdown ("2h 13m left"), and the exact reset time. This is
+    /// the prominent home for the "when does my quota refresh" answer that used
+    /// to hide as grey small-print in the section header's top-right corner.
+    private var resetRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "clock")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(theme.text(.tertiary))
+            Text(sessionResetCountdown())
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundColor(theme.text(.secondary))
+                .monospacedDigit()
+            Text("· resets \(sessionResetClockString())")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundColor(theme.text(.tertiary))
+                .monospacedDigit()
+            Spacer()
+        }
+    }
+
     private var expandedContent: some View {
         let t = theme
-        // Outer rhythm follows an 8pt grid: 16 between sections, 8 within.
+        // 16pt between sections, each pair split by a hairline `sectionDivider`
+        // so the card reads as distinct blocks (Header · Session · Today ·
+        // Models). The information diet keeps it calm rather than crowded.
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 ModelDot(model: monitor.snapshot.currentModel,
@@ -664,7 +759,7 @@ struct IslandView: View {
                                     .foregroundColor(t.text(.secondary))
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
-                                    .background(Capsule().fill(t.chrome(0.10)))
+                                    .chromeBackground(in: Capsule(), fill: t.chrome(0.10))
                                     .help("\(monitor.snapshot.activeSessions) active sessions")
                             }
                         }
@@ -684,45 +779,38 @@ struct IslandView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(t.text(.tertiary))
                         .frame(width: 22, height: 22)
-                        .background(Circle().fill(t.chrome(0.08)))
+                        .chromeBackground(in: Circle(), fill: t.chrome(0.08))
                 }
                 .buttonStyle(.plain)
             }
 
+            sectionDivider
+
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(monitor.snapshot.planUsage?.fiveHour != nil ? "Session" : "5-hour block")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .tracking(0.5)
-                        .foregroundColor(t.text(.tertiary))
-                    Spacer()
-                    Text("resets \(sessionResetClockString())")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundColor(t.text(.tertiary))
-                }
+                sectionLabel(monitor.snapshot.planUsage?.fiveHour != nil ? "SESSION" : "5-HOUR BLOCK")
                 if let five = monitor.snapshot.planUsage?.fiveHour {
+                    // Single hero: the session-used %. The token/$ restatement
+                    // that used to sit on the right is gone — TODAY below
+                    // already carries spend, and the gauge carries the rest.
                     HStack(alignment: .lastTextBaseline, spacing: 6) {
                         Text(percentString(five.utilization))
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .font(.system(size: 32, weight: .bold, design: .rounded))
                             .foregroundColor(t.text(.primary))
                             .monospacedDigit()
                         Text("used")
                             .font(.system(size: 11, weight: .medium, design: .rounded))
                             .foregroundColor(t.text(.tertiary))
                         Spacer()
-                        Text("\(formatTokens(monitor.snapshot.tokensBlock)) · \(String(format: "$%.2f", monitor.snapshot.costBlock))")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundColor(t.text(.tertiary))
-                            .monospacedDigit()
                     }
                     ProgressTrack(progress: max(0, min(1, five.utilization)))
+                    resetRow
                 } else {
                     // Dual-hero treatment: tokens on the left, dollars on
                     // the right — both at the same display size so neither
                     // visually outranks the other.
                     HStack(alignment: .lastTextBaseline, spacing: 6) {
                         Text(formatTokens(monitor.snapshot.tokensBlock))
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundColor(t.text(.primary))
                             .monospacedDigit()
                         Text("tokens")
@@ -730,13 +818,14 @@ struct IslandView: View {
                             .foregroundColor(t.text(.tertiary))
                         Spacer()
                         Text(String(format: "$%.2f", monitor.snapshot.costBlock))
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
                             .foregroundColor(t.text(.primary))
                             .monospacedDigit()
                     }
                     ProgressTrack(progress: blockProgress())
+                    resetRow
                 }
-                if let seven = monitor.snapshot.planUsage?.sevenDay {
+                if weeklyWorthShowing, let seven = monitor.snapshot.planUsage?.sevenDay {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("Weekly")
                             .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -758,39 +847,37 @@ struct IslandView: View {
                 }
             }
 
-            // Today summary — single hero line. Editorial layout: the
-            // dollar amount is the visual anchor on the left; the token
-            // count is the secondary metric, right-aligned. No icons or
-            // chrome — the typography hierarchy carries the design.
-            HStack(alignment: .lastTextBaseline, spacing: 0) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("TODAY")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .tracking(0.5)
-                        .foregroundColor(t.text(.tertiary))
+            sectionDivider
+
+            // Today summary — secondary to the Session hero above. The dollar
+            // amount anchors the left; the token count is the quieter metric,
+            // right-aligned. Smaller than the gauge % so the eye reads Session
+            // first, Today second.
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("TODAY")
+                HStack(alignment: .lastTextBaseline, spacing: 6) {
                     Text(String(format: "$%.2f", monitor.snapshot.costToday))
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(t.text(.primary))
                         .monospacedDigit()
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("TOKENS")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .tracking(0.5)
-                        .foregroundColor(t.text(.tertiary))
+                    Spacer()
                     Text(formatTokens(monitor.snapshot.tokensToday))
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundColor(t.text(.secondary))
                         .monospacedDigit()
+                    Text("tokens")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundColor(t.text(.tertiary))
                 }
             }
 
-            // Per-model split for the *current 5h session block* — shows
-            // which models are eating your plan quota right now. Always
-            // visible when there's block usage; single-model case confirms
-            // you're 100% on the chosen one.
-            if !modelSplitSegments.isEmpty {
+            // Per-model split — only when more than one model is actually in
+            // play. A single-model session would just say "100% Opus", which
+            // the header dot already tells you; showing it anyway was clutter.
+            // The divider lives inside the condition so it never strands above
+            // an absent section.
+            if modelSplitWorthShowing {
+                sectionDivider
                 ModelSplitBar(title: "Session by model", segments: modelSplitSegments)
                     .help("Current session's usage split by model")
             }
@@ -910,6 +997,27 @@ struct IslandView: View {
             return Self.clockFormatter.string(from: r)
         }
         return blockResetClockString()
+    }
+
+    /// The authoritative reset instant for the current session/block, or `nil`
+    /// if we have neither an Anthropic-reported time nor a local block start.
+    private var sessionResetDate: Date? {
+        if let r = monitor.snapshot.planUsage?.fiveHour?.resetsAt { return r }
+        return monitor.snapshot.blockStart?.addingTimeInterval(5 * 3600)
+    }
+
+    /// Human countdown to the session reset — "2h 13m left", "45m left", or
+    /// "resetting…" in the final seconds. Surfaced prominently under the gauge
+    /// because "how long until my quota refreshes" is the question users open
+    /// the card to answer.
+    private func sessionResetCountdown() -> String {
+        guard let end = sessionResetDate else { return "—" }
+        let remaining = end.timeIntervalSince(Date())
+        guard remaining > 0 else { return "resetting…" }
+        let h = Int(remaining) / 3600
+        let m = (Int(remaining) % 3600) / 60
+        if h > 0 { return "\(h)h \(m)m left" }
+        return "\(m)m left"
     }
 
     /// Estimated working time = elapsed time since the current 5h block began.
@@ -1037,9 +1145,7 @@ struct ProgressTrack: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                // Track with a faint inner-shadow look via stacked fills —
-                // gives the bar depth without an actual `.shadow` (which
-                // would bleed outside the capsule on light themes).
+                // Empty track behind the colored fill.
                 Capsule()
                     .fill(theme.progressTrack)
                 Capsule()

@@ -2,95 +2,24 @@ import SwiftUI
 import AppKit
 import Combine
 
-/// User-selectable appearance. `system` defers to macOS Dark/Light.
-enum Appearance: String, CaseIterable, Identifiable {
-    case system
-    case dark
-    case light
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .system: return "Auto"
-        case .dark:   return "Dark"
-        case .light:  return "Light"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .system: return "circle.lefthalf.filled"
-        case .dark:   return "moon.fill"
-        case .light:  return "sun.max.fill"
-        }
-    }
-
-    var help: String {
-        switch self {
-        case .system: return "Follow macOS Dark/Light"
-        case .dark:   return "Dark pill"
-        case .light:  return "Light pill"
-        }
-    }
-}
-
-/// Resolved "concrete" appearance — what gets actually rendered. `system`
-/// gets resolved to one of these before producing theme tokens.
+/// Resolved "concrete" appearance — what actually gets rendered. VibeNotch is
+/// dark-only (the island has to vanish into the black camera-housing notch), so
+/// `light` is retained only as a dormant code path in `Theme`; nothing produces
+/// it at runtime.
 enum ResolvedAppearance {
     case dark
     case light
 }
 
-/// Global appearance store. Owns the user's choice and tracks the system's
-/// effective appearance so `system` can resolve correctly without each view
-/// having to listen to AppKit notifications individually.
+/// Global appearance store. VibeNotch ships dark-only — there's no user-facing
+/// light/auto switch — so `resolved` is a constant. Kept as an
+/// `ObservableObject` singleton so the views' `@ObservedObject` wiring and the
+/// `.environment(\.ccTheme)` plumbing stay unchanged.
 final class AppearanceStore: ObservableObject {
     static let shared = AppearanceStore()
+    private init() {}
 
-    private static let key = "VibeNotch.appearance"
-
-    /// User's pick (may be `.system`).
-    @Published var current: Appearance {
-        didSet {
-            UserDefaults.standard.set(current.rawValue, forKey: Self.key)
-        }
-    }
-
-    /// True when macOS is currently in Dark Mode. Updated by KVO on
-    /// `NSApp.effectiveAppearance`. Only consulted when `current == .system`.
-    @Published private(set) var systemIsDark: Bool = true
-
-    private var observation: NSKeyValueObservation?
-
-    private init() {
-        let raw = UserDefaults.standard.string(forKey: Self.key) ?? Appearance.dark.rawValue
-        self.current = Appearance(rawValue: raw) ?? .dark
-
-        // NSApp may not be fully initialized at static-init time; defer the
-        // first read + KVO setup to the next main-loop tick.
-        DispatchQueue.main.async { [weak self] in
-            self?.refreshSystemAppearance()
-            self?.observation = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-                DispatchQueue.main.async { self?.refreshSystemAppearance() }
-            }
-        }
-    }
-
-    private func refreshSystemAppearance() {
-        let appearance = NSApp.effectiveAppearance
-        let match = appearance.bestMatch(from: [.darkAqua, .vibrantDark, .aqua, .vibrantLight])
-        let isDark = (match == .darkAqua || match == .vibrantDark)
-        if isDark != systemIsDark { systemIsDark = isDark }
-    }
-
-    var resolved: ResolvedAppearance {
-        switch current {
-        case .system: return systemIsDark ? .dark : .light
-        case .dark:   return .dark
-        case .light:  return .light
-        }
-    }
+    var resolved: ResolvedAppearance { .dark }
 }
 
 /// Color tokens. Every surface in the island reads from here so a single
@@ -155,6 +84,15 @@ struct Theme {
         isLight
             ? Color(red: 0.35, green: 0.35, blue: 0.95)
             : Color(red: 0.45, green: 0.55, blue: 1.0)
+    }
+}
+
+extension View {
+    /// Fills an accessory's background with a flat `fill` behind the given
+    /// shape — trait chips, the ×N badge, progress tracks, the keychain pill.
+    /// (Formerly a Liquid Glass surface; the app is now opaque-only.)
+    func chromeBackground<S: Shape>(in shape: S, fill: Color) -> some View {
+        background(shape.fill(fill))
     }
 }
 
