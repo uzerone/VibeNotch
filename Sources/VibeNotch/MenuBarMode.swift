@@ -17,6 +17,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var cancellables: Set<AnyCancellable> = []
+    /// Last title written, so an unchanged snapshot doesn't re-set the title
+    /// (which forces AppKit to re-measure and re-lay-out the item needlessly).
+    private var lastTitle: String?
 
     init(monitor: UsageMonitor) {
         self.monitor = monitor
@@ -54,28 +57,74 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         statusItem = nil
+        lastTitle = nil   // so a later re-activate writes the first title fresh
+    }
+
+    /// Build the menu-bar title and write it only if it changed. Skipping
+    /// no-op writes avoids needless re-layout of the status item.
+    private func refreshTitle() {
+        guard let button = statusItem?.button else { return }
+        let title = Self.menuTitle(for: monitor.snapshot)
+        guard title != lastTitle else { return }
+        lastTitle = title
+        button.title = title
     }
 
     /// Build the menu-bar title: "23% · 8:45 PM" when plan data is available,
     /// otherwise a token/cost fallback so the item is never blank.
-    private func refreshTitle() {
-        guard let button = statusItem?.button else { return }
-        button.title = Self.menuTitle(for: monitor.snapshot)
-    }
-
+    ///
+    /// The menu-bar item is `variableLength`, so its width follows the title's
+    /// rendered width and the item visibly slides left/right whenever that
+    /// width changes. Two things drive that: the percent's digit count
+    /// (`9%` → `100%`) and the clock's hour digit count (`8:45 PM` is one glyph
+    /// narrower than `12:45 PM`). Monospaced digits alone don't fix it — they
+    /// equalize same-length digit runs, not different-length ones. So we pad
+    /// both fields to a fixed width with FIGURE SPACE (U+2007), which renders
+    /// at digit width in the monospaced-digit font and never collapses. The
+    /// result is a constant-width title that doesn't jitter as the numbers or
+    /// the clock change.
     static func menuTitle(for s: UsageSnapshot) -> String {
         if let five = s.planUsage?.fiveHour {
             let pct = Int((max(0, min(1, five.utilization)) * 100).rounded())
+            let pctField = padLeft("\(pct)%", toWidth: 4)   // "  7%" … "100%"
             if let reset = five.resetsAt {
-                return "\(pct)% · \(clockFormatter.string(from: reset))"
+                return "\(pctField) · \(stableClock(reset))"
             }
-            return "\(pct)%"
+            return pctField
         }
         // No plan budget (e.g. Codex, or pre-login Claude) — show block tokens.
         if s.tokensBlock > 0 {
             return formatTokens(s.tokensBlock)
         }
         return "—"
+    }
+
+    /// Figure space (U+2007): a typographic space the width of a digit. Used to
+    /// pad numeric fields so they hold a constant width without shifting.
+    private static let figureSpace = "\u{2007}"
+
+    /// Left-pads `s` with figure spaces to a fixed character width, so the
+    /// field's rendered width is constant regardless of how many digits the
+    /// value has. No-op if `s` is already at least that wide.
+    private static func padLeft(_ s: String, toWidth width: Int) -> String {
+        let pad = width - s.count
+        guard pad > 0 else { return s }
+        return String(repeating: figureSpace, count: pad) + s
+    }
+
+    /// Clock string with a constant width. `DateFormatter`'s short style emits a
+    /// 1- or 2-digit hour (`8:45 PM` vs `12:45 PM`), which changes the item's
+    /// width every time the hour crosses that boundary. We pad a single-digit
+    /// hour with one figure space so the field is always the 2-digit-hour width.
+    private static func stableClock(_ date: Date) -> String {
+        let raw = clockFormatter.string(from: date)
+        // The hour is the run of digits before the first ":". If it's a single
+        // digit, prepend one figure space to match the 2-digit-hour width.
+        if let colon = raw.firstIndex(of: ":") {
+            let hourDigits = raw.distance(from: raw.startIndex, to: colon)
+            if hourDigits == 1 { return figureSpace + raw }
+        }
+        return raw
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -138,9 +187,11 @@ private struct MenuBarCard: View {
             }
         }
         .padding(18)
-        // Settings needs more width for its picker rows + bottom action row;
-        // the stats face is comfortable narrower.
-        .frame(width: showSettings ? 372 : 280)
+        // One fixed width for both faces (stats and Settings) so the popover
+        // never resizes when you toggle into Settings. 372 is the width the
+        // Settings picker rows + bottom action row need; the stats face just
+        // gets a little more breathing room.
+        .frame(width: 372)
         .background(theme.panelFill)
     }
 

@@ -4,7 +4,7 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.5.4). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.6.1). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
@@ -12,7 +12,12 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.5.4
+## What's new in 1.6.1
+
+- **Steadier menu bar.** The menu-bar reading no longer wiggles left and right as the numbers and time change — it now holds its place.
+- **Consistent pop-up size.** Opening Settings from the menu-bar pop-up no longer makes the window jump to a different width.
+
+## 1.6.0
 
 - **Now lives in the menu bar too.** Don't want the pill near the notch? You can now show your usage right up in the menu bar instead — like "23% · 8:45 PM" — and click it to see the full details. Choose where it sits in Settings: the notch, anywhere on screen, or the menu bar.
 - **Open it your way.** Pick whether the details card opens when you hover over it, or only when you click. Whatever feels right to you.
