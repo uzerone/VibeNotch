@@ -30,6 +30,9 @@ final class ClaudePlanFetcher {
         switch err {
         case .noToken: return "no claude /login token in keychain"
         case .unauthorized: return "token expired — run claude /login"
+        // 429 is transient and self-healing (the monitor backs off and
+        // retries) — say that, instead of leaking a bare status code.
+        case .http(429): return "rate limited — retrying automatically"
         case .http(let s): return "usage endpoint \(s)"
         case .decode: return "usage payload changed"
         case .transport: return "network error"

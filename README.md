@@ -4,7 +4,7 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.6.1). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of accuracy and reliability fixes (current release: 1.7.0). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
@@ -12,7 +12,17 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.6.1
+## What's new in 1.7.0
+
+- **The pill is always reachable.** It no longer vanishes when idle — it blends into the notch (or dims in free mode), so hover or click always works.
+- **"Done" means done.** No more green checkmark while a long task is still running.
+- **A small "×2" badge** shows when you're running more than one session at once.
+- **Honest numbers.** If the official usage figure can't be fetched — login expired, or Anthropic asks us to slow down — the card says so and quietly retries on its own.
+- **The menu-bar pop-up now matches the card.** Same layout, same numbers, weekly gauge included.
+- **Lighter on your Mac.** Less background work, less memory, and countdowns keep ticking on their own. Times also follow your 12/24-hour clock setting.
+- **Fixed a rare crash** in the display-picker window.
+
+## 1.6.1
 
 - **Steadier menu bar.** The menu-bar reading no longer wiggles left and right as the numbers and time change — it now holds its place.
 - **Consistent pop-up size.** Opening Settings from the menu-bar pop-up no longer makes the window jump to a different width.

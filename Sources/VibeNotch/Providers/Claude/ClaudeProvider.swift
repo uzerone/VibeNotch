@@ -51,12 +51,6 @@ final class ClaudeProvider: UsageProvider {
 
     // MARK: - Plan %
 
-    func refreshPlan() async {
-        // Surfaced via the coordinator, which catches and stashes the result.
-        // We rethrow so it can distinguish auth failures.
-        _ = try? await planFetcher.fetch()
-    }
-
     /// Direct accessor for the coordinator's out-of-band plan timer, so it can
     /// handle `FetchError` cases (unauthorized vs transient) explicitly.
     func fetchPlan() async throws -> PlanUsage {
@@ -85,6 +79,7 @@ final class ClaudeProvider: UsageProvider {
         var sawPaths = Set<URL>()
         var mostRecent: (URL, Date)?
         var allEntries: [ClaudeEntry] = []
+        var activeSessionFiles = 0
 
         for case let url as URL in enumerator {
             guard url.pathExtension == "jsonl" else { continue }
@@ -115,6 +110,10 @@ final class ClaudeProvider: UsageProvider {
                cached.mtime == mtime {
                 cached.entries.removeAll { $0.ts < pruneCutoff }
                 fileCache[url] = cached
+                if let ts = cached.entries.last?.ts,
+                   now.timeIntervalSince(ts) < activeThreshold {
+                    activeSessionFiles += 1
+                }
                 allEntries.append(contentsOf: cached.entries)
                 continue
             }
@@ -143,6 +142,10 @@ final class ClaudeProvider: UsageProvider {
             entry.size = size
             fileCache[url] = entry
 
+            if let ts = entry.entries.last?.ts,
+               now.timeIntervalSince(ts) < activeThreshold {
+                activeSessionFiles += 1
+            }
             allEntries.append(contentsOf: entry.entries)
         }
 
@@ -158,14 +161,12 @@ final class ClaudeProvider: UsageProvider {
         // the file mtime: an mtime bumps on any write (user line, summary,
         // non-assistant event), which would let a provider win the merge and
         // claim activity "now" with zero new cost. `lastActivity` is the latest
-        // parsed assistant turn; `activeSessions` counts only sessions with a
-        // turn inside the active window. `mostRecent` (mtime) is still used to
-        // pick which file's tail to read for the current model/work state.
-        let lastEntryTs = allEntries.map(\.ts).max()
-        snap.lastActivity = lastEntryTs
-        if let ts = lastEntryTs, now.timeIntervalSince(ts) < activeThreshold {
-            snap.activeSessions = 1
-        }
+        // parsed assistant turn; `activeSessions` counts session files with a
+        // turn inside the active window (drives the "×N" badge). `mostRecent`
+        // (mtime) is still used to pick which file's tail to read for the
+        // current model/work state.
+        snap.lastActivity = allEntries.map(\.ts).max()
+        snap.activeSessions = activeSessionFiles
 
         // Aggregate today's totals with global dedup. Same (msg.id, requestId)
         // can appear up to ~17x across files (session resume/edit/branch);
@@ -177,9 +178,6 @@ final class ClaudeProvider: UsageProvider {
             }
             snap.tokensToday += e.totalTokens
             snap.costToday += e.cost
-            if let m = e.model {
-                snap.tokensByModelToday[m, default: 0] += e.totalTokens
-            }
         }
 
         // Determine the *current* fixed 5-hour window — matching Claude
@@ -202,10 +200,20 @@ final class ClaudeProvider: UsageProvider {
             snap.currentModelTraits = lastInfo?.traits ?? ModelTraits()
             if sinceMod < 3 {
                 snap.workState = .working
-            } else if sinceMod < awaitingThreshold,
-                      let stop = lastInfo?.stopReason,
-                      stop == "end_turn" || stop == "tool_use" {
+            } else if sinceMod < awaitingThreshold, let stop = lastInfo?.stopReason,
+                      stop == "end_turn" {
+                // Turn genuinely finished — waiting on the user.
                 snap.workState = .awaitingDecision
+            } else if sinceMod < awaitingThreshold, lastInfo?.stopReason == "tool_use" {
+                // Ambiguous: a trailing `tool_use` with no tool result yet is
+                // either a tool still executing (working) or a permission
+                // prompt (awaiting) — the JSONL can't distinguish them. Most
+                // tool runs finish well within ~30s, while a permission
+                // prompt sits quiet indefinitely, so quiet-under-30s reads as
+                // working and longer quiet flips to awaiting. A long build
+                // still mislabels after 30s, but no longer flashes FINISH the
+                // moment a 3s-quiet tool call starts.
+                snap.workState = sinceMod < 30 ? .working : .awaitingDecision
             } else {
                 snap.workState = .idle
             }
@@ -355,10 +363,6 @@ final class ClaudeProvider: UsageProvider {
                     let cacheRead = (usage["cache_read_input_tokens"] as? Int) ?? 0
                     let cacheCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
                     traits.oneMillionContext = (input + cacheRead + cacheCreate) > 200_000
-                    if let cc = usage["cache_creation"] as? [String: Any] {
-                        let h1 = (cc["ephemeral_1h_input_tokens"] as? Int) ?? 0
-                        traits.oneHourCache = h1 > 0
-                    }
                     // Claude Code's `/fast` toggle surfaces in the usage
                     // payload as `speed: "fast"` (default is `"standard"`).
                     traits.fastMode = (usage["speed"] as? String) == "fast"

@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var window: IslandWindow?
     var chooserWindow: NSPanel?
     let monitor = UsageMonitor()
-    let config = IslandConfig(geometry: IslandGeometry(notchWidth: 0, notchHeight: 24, screenWidth: 1440))
+    let config = IslandConfig(geometry: IslandGeometry(notchWidth: 0, notchHeight: 24))
     let hitArea = HitArea()
     private var mouseMonitor: Any?
     private var lastCursorInside = false
@@ -131,7 +131,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Also re-evaluate when our SwiftUI view republishes the hit rect
         // (e.g. CC starts working and the dropdown appears under the cursor).
-        hitArea.$rect.sink { [weak self] _ in self?.updateClickThrough() }
+        hitArea.$rect
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.updateClickThrough() }
             .store(in: &cancellables)
     }
 
@@ -291,9 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // menu bar instead.
         let notchH = safeTop > 0 ? safeTop : menuBarH
 
-        return IslandGeometry(notchWidth: notchW,
-                              notchHeight: notchH,
-                              screenWidth: screen.frame.width)
+        return IslandGeometry(notchWidth: notchW, notchHeight: notchH)
     }
 
     private func positionTopCenter(on screen: NSScreen, size: NSSize, animated: Bool) {
@@ -328,6 +328,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
                             styleMask: [.titled, .closable, .nonactivatingPanel],
                             backing: .buffered, defer: false)
+        // NSPanel defaults to isReleasedWhenClosed = true; the close button
+        // would then free the panel while `chooserWindow` still points at it,
+        // and the next dismissChooser() would message a deallocated object.
+        // ARC manages the lifetime — keep AppKit's extra release out of it.
+        panel.isReleasedWhenClosed = false
         panel.title = "Pick a display for VibeNotch"
         panel.level = .floating
         panel.isFloatingPanel = true

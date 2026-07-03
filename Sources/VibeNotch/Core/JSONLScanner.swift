@@ -25,6 +25,12 @@ struct FileCache<Entry> {
 /// arrives. On read failure, returns `fileSize` so the caller doesn't retry
 /// the same bytes forever.
 enum JSONLScanner {
+    /// Chunk size for the incremental read. Bounded so a first-launch parse of
+    /// a multi-hundred-MB session file doesn't materialize the whole file in
+    /// memory the way `readToEnd()` did — only one chunk (plus any partial
+    /// line carried across the boundary) is resident at a time.
+    private static let chunkSize = 4 << 20   // 4 MB
+
     static func scanAppended(url: URL,
                              from offset: Int,
                              fileSize: UInt64,
@@ -38,29 +44,40 @@ enum JSONLScanner {
             do { try handle.seek(toOffset: UInt64(offset)) }
             catch { return Int(fileSize) }
         }
-        guard let tail = try? handle.readToEnd(), !tail.isEmpty else {
-            return Int(fileSize)
-        }
 
-        var consumed = 0
-        tail.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            let buf = UnsafeBufferPointer(start: base, count: tail.count)
-            var lineStart = 0
-            for idx in 0..<buf.count {
-                if buf[idx] == 0x0A {
-                    if idx > lineStart,
-                       containsMarker(buf, lineStart: lineStart, lineEnd: idx, marker: marker) {
-                        let lineData = Data(bytes: buf.baseAddress!.advanced(by: lineStart),
-                                            count: idx - lineStart)
-                        body(lineData)
+        var totalRead = 0
+        var carry = Data()   // partial line spilling over a chunk boundary
+        while let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty {
+            totalRead += chunk.count
+            let data = carry.isEmpty ? chunk : carry + chunk
+            var lastLineEnd = 0   // index just past the last '\n' seen
+            data.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                let buf = UnsafeBufferPointer(start: base, count: data.count)
+                var lineStart = 0
+                for idx in 0..<buf.count {
+                    if buf[idx] == 0x0A {
+                        if idx > lineStart,
+                           containsMarker(buf, lineStart: lineStart, lineEnd: idx, marker: marker) {
+                            let lineData = Data(bytes: buf.baseAddress!.advanced(by: lineStart),
+                                                count: idx - lineStart)
+                            body(lineData)
+                        }
+                        lineStart = idx + 1
+                        lastLineEnd = lineStart
                     }
-                    lineStart = idx + 1
-                    consumed = lineStart
                 }
             }
+            carry = lastLineEnd < data.count
+                ? data.subdata(in: lastLineEnd..<data.count)
+                : Data()
         }
-        return offset + consumed
+        // Nothing read at all (error or already at EOF): report the file as
+        // fully consumed so the caller doesn't retry the same bytes forever.
+        if totalRead == 0 { return Int(fileSize) }
+        // The trailing `carry` is an unterminated final line — leave it for
+        // the next poll, once its newline has been written.
+        return offset + totalRead - carry.count
     }
 
     /// True if `marker` occurs as a byte subsequence within `[lineStart, lineEnd)`.

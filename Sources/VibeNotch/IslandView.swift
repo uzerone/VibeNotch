@@ -26,9 +26,8 @@ final class HitArea: ObservableObject {
 struct IslandGeometry: Equatable {
     var notchWidth: CGFloat
     var notchHeight: CGFloat
-    var screenWidth: CGFloat
-    /// `nil` when the host screen has a real notch. Non-nil for external
-    /// displays, where we just lay out as a top-center pill.
+    /// True when the host screen has a real camera-housing notch; false for
+    /// external displays, where we just lay out as a top-center pill.
     var hasPhysicalNotch: Bool { notchWidth > 0 }
 
     /// Collapsed island width is locked to the notch width so the top row
@@ -80,7 +79,10 @@ struct IslandGeometry: Equatable {
 struct IslandView: View {
     @ObservedObject var monitor: UsageMonitor
     @ObservedObject var config: IslandConfig
-    @ObservedObject var hitArea: HitArea
+    /// Write-only from this view (the host reads it for hit-testing) — held as
+    /// a plain reference, NOT `@ObservedObject`, so publishing a new rect
+    /// doesn't re-render the island that just wrote it.
+    let hitArea: HitArea
     @ObservedObject var appearance: AppearanceStore = .shared
     @ObservedObject var placement: PlacementStore = .shared
     @ObservedObject var expandTrigger: ExpandTriggerStore = .shared
@@ -88,7 +90,13 @@ struct IslandView: View {
     @State private var expanded = false
     @State private var showSettings = false
     @State private var finishVisibleUntil: Date?
+    /// Slow display clock for the time-derived strings (countdowns, "Xm ago",
+    /// block progress). The snapshot publisher is deduplicated, so without
+    /// this tick an idle card's "2h 13m left" would freeze.
+    @State private var now = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let displayTick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     /// How long FINISH stays visible in notch mode before auto-dismissing
     /// back to the resets-countdown view. On external display / free-move
@@ -128,12 +136,27 @@ struct IslandView: View {
         return theme
     }
 
-    /// True when the island is rendered at all. We stay visible while there
-    /// is *any* recent 5-hour block — even if Claude isn't actively writing —
-    /// so the dropdown can show live block tokens + reset countdown. Only
-    /// truly empty state (no recent CC use at all) hides the island.
+    /// True when the island is rendered at all. Active states always show;
+    /// the bare idle pill additionally stays present — and hoverable — where
+    /// it can do so unobtrusively: docked over a physical notch it camouflages
+    /// as the camera housing, and in free-move it's the user's own widget
+    /// (dimmed when idle). Without this, an idle island had a zero hit-area
+    /// and Settings became unreachable until new usage appeared. On external
+    /// displays in notch placement the pill still vanishes when empty — a
+    /// black pill under the menu bar has nothing to hide behind.
     private var visible: Bool {
-        expanded || hasDropdownState
+        expanded || hasDropdownState || idleTargetAvailable
+    }
+
+    private var idleTargetAvailable: Bool {
+        isFreeMove || geometry.hasPhysicalNotch
+    }
+
+    /// The bare idle pill in free-move mode dims so it reads as a dormant
+    /// widget, not a stuck black blob. Docked over the notch it stays fully
+    /// opaque — it must be pure black to merge with the housing.
+    private var idleOpacity: Double {
+        isFreeMove ? 0.5 : 1.0
     }
 
     private var hasRecentBlock: Bool {
@@ -264,8 +287,14 @@ struct IslandView: View {
             // the top edge makes the pill extrude downward. Opacity fades in
             // slightly later so the motion reads as growth, not a pop.
             .scaleEffect(x: 1, y: visible ? 1 : 0.02, anchor: .top)
-            .opacity(visible ? 1 : 0)
+            .opacity(visible
+                     ? ((expanded || hasDropdownState) ? 1 : idleOpacity)
+                     : 0)
             .animation(dropSpring, value: visible)
+            // Idle ↔ active is a size change (not a visibility flip) now that
+            // the idle pill stays rendered — animate it with the same drop
+            // spring so the info row still slides out from the notch.
+            .animation(dropSpring, value: hasDropdownState)
             .onHover { hovering in
                 // Hover-to-expand only. In click mode the cursor entering or
                 // leaving the pill must not change the expanded state — taps
@@ -296,6 +325,7 @@ struct IslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .environment(\.ccTheme, t)
         .onAppear { updateHitArea(); armFinishTimerIfNeeded() }
+        .onReceive(Self.displayTick) { now = $0 }
         .onChange(of: visible) { _ in updateHitArea() }
         .onChange(of: expanded) { _ in updateHitArea() }
         .onChange(of: monitor.snapshot.hasActivity) { _ in updateHitArea() }
@@ -329,15 +359,22 @@ struct IslandView: View {
     /// host can mask off clicks outside it. When the island is hidden
     /// (idle + not expanded), the rect is empty so every click falls through.
     private func updateHitArea() {
-        guard visible else { hitArea.rect = .zero; return }
-        let pill = size
-        let outer = geometry.expandedSize
-        hitArea.rect = CGRect(
-            x: (outer.width - pill.width) / 2,
-            y: outer.height - pill.height,
-            width: pill.width,
-            height: pill.height
-        )
+        let rect: CGRect
+        if visible {
+            let pill = size
+            let outer = geometry.expandedSize
+            rect = CGRect(
+                x: (outer.width - pill.width) / 2,
+                y: outer.height - pill.height,
+                width: pill.width,
+                height: pill.height
+            )
+        } else {
+            rect = .zero
+        }
+        // Skip no-op writes — every publish re-runs the host's click-through
+        // evaluation.
+        if hitArea.rect != rect { hitArea.rect = rect }
     }
 
     /// The pill silhouette.
@@ -457,71 +494,9 @@ struct IslandView: View {
         .frame(maxHeight: .infinity)
     }
 
-    /// Pretty display name for the active model — see `displayName(for:)`.
+    /// Pretty display name for the active model — see `ModelDisplay`.
     private var modelDisplayName: String {
-        Self.displayName(for: monitor.snapshot.currentModel)
-    }
-
-    /// Pretty display name: "Opus 4.7", "Sonnet 4.6", "Haiku 4.5",
-    /// "GPT-5.5", "GPT-5.4 mini", "Codex 5.3", "Codex 5.3 Spark", etc. Static
-    /// so the menu-bar card can format the same name without an `IslandView`.
-    static func displayName(for model: String?) -> String {
-        guard let m = model else { return "—" }
-        let lower = m.lowercased()
-        // OpenAI / Codex models keep their canonical id (don't run the
-        // "claude-" strip + version-split path, which would mangle the names).
-        if lower.hasPrefix("gpt") || lower.contains("codex") {
-            return Self.formatOpenAIModel(lower) ?? m.uppercased()
-        }
-        // Strip a bracketed capability suffix like "[1m]" before parsing —
-        // the 1M-context variant id is "claude-fable-5[1m]", which would
-        // otherwise leak into the label as "Fable 5[1m]". The 1M state is
-        // already surfaced separately by the "1M" trait chip.
-        let base = m.split(separator: "[").first.map(String.init) ?? m
-        let parts = base.replacingOccurrences(of: "claude-", with: "").split(separator: "-").map(String.init)
-        // Find the family by name, not position: the version can lead the id
-        // ("claude-3-5-sonnet" → Sonnet 3.5) or trail it ("claude-opus-4-7" →
-        // Opus 4.7). The family is the alphabetic token; the numeric tokens
-        // around it are version components (a long run is a date stamp).
-        guard let fi = parts.firstIndex(where: { $0.contains(where: \.isLetter) }) else { return m }
-        let family = parts[fi]
-        let nameCap = family.prefix(1).uppercased() + family.dropFirst()
-        // Version digits are the short numeric tokens adjacent to the family,
-        // in id order, excluding date stamps (>= 3 digits, e.g. 20241022).
-        let versionParts = parts.enumerated()
-            .filter { $0.offset != fi && $0.element.allSatisfy(\.isNumber) && $0.element.count < 3 }
-            .map(\.element)
-        if versionParts.isEmpty { return nameCap }
-        return "\(nameCap) \(versionParts.joined(separator: "."))"
-    }
-
-    /// Clean labels for OpenAI's Codex CLI lineup. Codex-suffixed coding
-    /// models read as "Codex <ver>" (the agentic-coding brand); the rest read
-    /// as "GPT-<ver>" with any size suffix kept. `model` is already lowercased.
-    ///   gpt-5.5            → "GPT-5.5"
-    ///   gpt-5.4-mini       → "GPT-5.4 mini"
-    ///   gpt-5.3-codex      → "Codex 5.3"
-    ///   gpt-5.3-codex-spark→ "Codex 5.3 Spark"
-    static func formatOpenAIModel(_ model: String) -> String? {
-        // Pull the version number (e.g. "5.5", "5.4", "5.3") if present.
-        let ver = model.split(whereSeparator: { !"0123456789.".contains($0) })
-            .first(where: { $0.contains(".") }).map(String.init)
-
-        if model.contains("codex") {
-            var label = "Codex"
-            if let v = ver { label += " \(v)" }
-            if model.contains("spark") { label += " Spark" }
-            return label
-        }
-        if model.hasPrefix("gpt") {
-            guard let v = ver else { return model.uppercased() }
-            var label = "GPT-\(v)"
-            if model.contains("nano") { label += " nano" }
-            else if model.contains("mini") { label += " mini" }
-            else if model.contains("pro") { label += " Pro" }
-            return label
-        }
-        return nil
+        ModelDisplay.displayName(for: monitor.snapshot.currentModel)
     }
 
     /// Variant tags to chip alongside the model name, each with a tooltip
@@ -537,7 +512,7 @@ struct IslandView: View {
             tags.append(("THINKING", "Extended thinking is on — slower, deeper reasoning"))
         }
         if t.fastMode {
-            tags.append(("FAST", "/fast mode is toggled — Opus 4.6 at faster output speed"))
+            tags.append(("FAST", "/fast mode is toggled — same model at faster output speed"))
         }
         if let e = t.reasoningEffort {
             tags.append((e.uppercased(), "Codex reasoning effort — how much the model deliberates per turn"))
@@ -617,7 +592,7 @@ struct IslandView: View {
                     .tracking(0.8)
                     .foregroundColor(workingWordColor)
                 separator
-                Text(workingTimeString())
+                Text(monitor.snapshot.blockStart.map { UsageFormat.elapsed(since: $0, now: now) } ?? "—")
                     .font(.system(size: 10, weight: .medium, design: .rounded))
                     .foregroundColor(t.text(.secondary))
                     .monospacedDigit()
@@ -629,12 +604,12 @@ struct IslandView: View {
             // chip; model + tokens live in the expanded card.
             HStack(spacing: 6) {
                 if let five = monitor.snapshot.planUsage?.fiveHour {
-                    Text(percentString(five.utilization))
+                    Text(UsageFormat.percent(five.utilization))
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundColor(t.text(.primary))
                         .monospacedDigit()
                 } else {
-                    Text(formatTokens(monitor.snapshot.tokensBlock))
+                    Text(UsageFormat.tokens(monitor.snapshot.tokensBlock))
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundColor(t.text(.primary))
                         .monospacedDigit()
@@ -644,7 +619,7 @@ struct IslandView: View {
                     Image(systemName: "clock")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(t.text(.tertiary))
-                    Text(sessionResetClockString())
+                    Text(monitor.snapshot.sessionResetDate.map(UsageFormat.clock) ?? "—")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundColor(t.text(.secondary))
                         .monospacedDigit()
@@ -664,17 +639,6 @@ struct IslandView: View {
             .frame(width: 2, height: 2)
     }
 
-    /// Color encoding for the right-side dot based on 5h block progress.
-    /// gray (no block) → cyan (early) → indigo (mid) → orange (almost spent).
-    /// Weekly usage only earns a place on the card once it's high enough to
-    /// matter (≥ 50%). Below that it's noise — the session gauge already tells
-    /// you you're fine. This is the "information diet": surface a metric only
-    /// when it changes a decision.
-    private var weeklyWorthShowing: Bool {
-        guard let seven = monitor.snapshot.planUsage?.sevenDay else { return false }
-        return seven.utilization >= 0.5
-    }
-
     /// The model split is only informative when more than one family is in
     /// play. A single-model session is the common case and the split bar just
     /// restates "100% Opus" — drop it so the card breathes.
@@ -682,41 +646,10 @@ struct IslandView: View {
         modelSplitSegments.count > 1
     }
 
-    /// Uniform section caption — small, tracked, tertiary. Every block (SESSION,
-    /// TODAY, the model split) leads with one, so the eye navigates the card by
-    /// its headings instead of by guessing the hierarchy from number sizes.
-    private func sectionLabel(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .tracking(0.6)
-            .foregroundColor(theme.text(.tertiary))
-    }
-
     /// Hairline rule between sections — same faint chrome line the Settings
     /// panel uses, so a divided card reads consistently with the rest of the UI.
     private var sectionDivider: some View {
         Divider().background(theme.chrome(0.08))
-    }
-
-    /// The reset row, sitting directly under the session gauge — a clock glyph,
-    /// the human countdown ("2h 13m left"), and the exact reset time. This is
-    /// the prominent home for the "when does my quota refresh" answer that used
-    /// to hide as grey small-print in the section header's top-right corner.
-    private var resetRow: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "clock")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(theme.text(.tertiary))
-            Text(sessionResetCountdown())
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundColor(theme.text(.secondary))
-                .monospacedDigit()
-            Text("· resets \(sessionResetClockString())")
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundColor(theme.text(.tertiary))
-                .monospacedDigit()
-            Spacer()
-        }
     }
 
     private var expandedContent: some View {
@@ -764,7 +697,7 @@ struct IslandView: View {
                             }
                         }
                         if let last = monitor.snapshot.lastActivity {
-                            Text(relativeTime(last))
+                            Text(UsageFormat.relative(last, now: now))
                                 .font(.system(size: 9, weight: .medium, design: .rounded))
                                 .foregroundColor(t.text(.tertiary))
                         }
@@ -786,90 +719,14 @@ struct IslandView: View {
 
             sectionDivider
 
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel(monitor.snapshot.planUsage?.fiveHour != nil ? "SESSION" : "5-HOUR BLOCK")
-                if let five = monitor.snapshot.planUsage?.fiveHour {
-                    // Single hero: the session-used %. The token/$ restatement
-                    // that used to sit on the right is gone — TODAY below
-                    // already carries spend, and the gauge carries the rest.
-                    HStack(alignment: .lastTextBaseline, spacing: 6) {
-                        Text(percentString(five.utilization))
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .foregroundColor(t.text(.primary))
-                            .monospacedDigit()
-                        Text("used")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundColor(t.text(.tertiary))
-                        Spacer()
-                    }
-                    ProgressTrack(progress: max(0, min(1, five.utilization)))
-                    resetRow
-                } else {
-                    // Dual-hero treatment: tokens on the left, dollars on
-                    // the right — both at the same display size so neither
-                    // visually outranks the other.
-                    HStack(alignment: .lastTextBaseline, spacing: 6) {
-                        Text(formatTokens(monitor.snapshot.tokensBlock))
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundColor(t.text(.primary))
-                            .monospacedDigit()
-                        Text("tokens")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundColor(t.text(.tertiary))
-                        Spacer()
-                        Text(String(format: "$%.2f", monitor.snapshot.costBlock))
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundColor(t.text(.primary))
-                            .monospacedDigit()
-                    }
-                    ProgressTrack(progress: blockProgress())
-                    resetRow
-                }
-                if weeklyWorthShowing, let seven = monitor.snapshot.planUsage?.sevenDay {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("Weekly")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .tracking(0.5)
-                            .foregroundColor(t.text(.tertiary))
-                        Text(percentString(seven.utilization))
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundColor(t.text(.secondary))
-                            .monospacedDigit()
-                        ProgressTrack(progress: max(0, min(1, seven.utilization)))
-                            .frame(maxWidth: 120)
-                        Spacer()
-                        if let reset = seven.resetsAt {
-                            Text("resets \(Self.weekdayFormatter.string(from: reset))")
-                                .font(.system(size: 9, weight: .medium, design: .rounded))
-                                .foregroundColor(t.text(.quaternary))
-                        }
-                    }
-                }
-            }
+            // SESSION and TODAY are the shared card sections — the same
+            // views the menu-bar popover renders, so the two faces always
+            // agree on layout and numbers.
+            SessionSection(snapshot: monitor.snapshot, now: now)
 
             sectionDivider
 
-            // Today summary — secondary to the Session hero above. The dollar
-            // amount anchors the left; the token count is the quieter metric,
-            // right-aligned. Smaller than the gauge % so the eye reads Session
-            // first, Today second.
-            VStack(alignment: .leading, spacing: 8) {
-                sectionLabel("TODAY")
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text(String(format: "$%.2f", monitor.snapshot.costToday))
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundColor(t.text(.primary))
-                        .monospacedDigit()
-                    Spacer()
-                    Text(formatTokens(monitor.snapshot.tokensToday))
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundColor(t.text(.secondary))
-                        .monospacedDigit()
-                    Text("tokens")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundColor(t.text(.tertiary))
-                }
-            }
+            TodaySection(snapshot: monitor.snapshot)
 
             // Per-model split — only when more than one model is actually in
             // play. A single-model session would just say "100% Opus", which
@@ -894,10 +751,10 @@ struct IslandView: View {
         var tokensByFamily: [String: Int] = [:]
         var costByFamily: [String: Double] = [:]
         for (model, tokens) in monitor.snapshot.tokensByModelBlock {
-            tokensByFamily[familyLabel(for: model), default: 0] += tokens
+            tokensByFamily[ModelDisplay.familyLabel(for: model), default: 0] += tokens
         }
         for (model, cost) in monitor.snapshot.costByModelBlock {
-            costByFamily[familyLabel(for: model), default: 0] += cost
+            costByFamily[ModelDisplay.familyLabel(for: model), default: 0] += cost
         }
         return tokensByFamily
             .sorted { $0.value > $1.value }
@@ -906,418 +763,8 @@ struct IslandView: View {
                     label: family,
                     fraction: Double(tokens) / Double(totalTokens),
                     cost: costByFamily[family] ?? 0,
-                    color: ModelDot.colorForModel(modelIdForFamily(family))
+                    color: ModelDot.colorForModel(ModelDisplay.idForFamily(family))
                 )
             }
-    }
-
-    private func familyLabel(for model: String) -> String {
-        let m = model.lowercased()
-        if m.contains("fable") || m.contains("mythos") { return "Fable" }
-        if m.contains("opus") { return "Opus" }
-        if m.contains("sonnet") { return "Sonnet" }
-        if m.contains("haiku") { return "Haiku" }
-        // OpenAI / Codex models — keep them distinct per model (GPT-5.5,
-        // GPT-5.4 mini, Codex 5.3, …) instead of collapsing to one bucket.
-        if m.hasPrefix("gpt") || m.contains("codex") {
-            return Self.formatOpenAIModel(m) ?? "GPT"
-        }
-        return "Other"
-    }
-
-    /// Reverse of `familyLabel` — gives `ModelDot.colorForModel` a string it
-    /// recognizes so the segment color matches the model dot. Any OpenAI
-    /// family resolves to a gpt/codex id, which `colorForModel` tints teal.
-    private func modelIdForFamily(_ family: String) -> String {
-        switch family {
-        case "Fable":   return "claude-fable"
-        case "Opus":    return "claude-opus"
-        case "Sonnet":  return "claude-sonnet"
-        case "Haiku":   return "claude-haiku"
-        default:
-            let f = family.lowercased()
-            if f.hasPrefix("gpt") || f.contains("codex") { return "gpt-5.5" }
-            return "claude-other"
-        }
-    }
-
-
-    /// Fraction of the 5h block elapsed. Used for the progress bar.
-    private func blockProgress() -> Double {
-        guard let start = monitor.snapshot.blockStart else { return 0 }
-        let elapsed = Date().timeIntervalSince(start)
-        return max(0, min(1, elapsed / (5 * 3600)))
-    }
-
-    private func formatTokens(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
-        return "\(n)"
-    }
-
-    private func relativeTime(_ d: Date) -> String {
-        let s = Int(Date().timeIntervalSince(d))
-        if s < 60 { return "\(s)s ago" }
-        if s < 3600 { return "\(s / 60)m ago" }
-        return "\(s / 3600)h ago"
-    }
-
-    /// Actual clock time when the current 5h block resets (e.g. "8:23 AM",
-    /// or "20:23" in 24-hour locales). "—" when no block is active.
-    private func blockResetClockString() -> String {
-        guard let start = monitor.snapshot.blockStart else { return "—" }
-        let end = start.addingTimeInterval(5 * 3600)
-        return Self.clockFormatter.string(from: end)
-    }
-
-    private static let clockFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.timeStyle = .short
-        f.dateStyle = .none
-        return f
-    }()
-
-    /// "Sun 5:00 PM" — weekday + short time, for weekly resets.
-    static let weekdayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "E h:mm a"
-        return f
-    }()
-
-    private func percentString(_ u: Double) -> String {
-        let v = max(0, min(100, u * 100))
-        // Match Anthropic's display — whole-number percent.
-        return "\(Int(v.rounded()))%"
-    }
-
-    /// Reset clock string, preferring the authoritative Anthropic-reported
-    /// time when we have it, otherwise the locally-derived block end.
-    private func sessionResetClockString() -> String {
-        if let r = monitor.snapshot.planUsage?.fiveHour?.resetsAt {
-            return Self.clockFormatter.string(from: r)
-        }
-        return blockResetClockString()
-    }
-
-    /// The authoritative reset instant for the current session/block, or `nil`
-    /// if we have neither an Anthropic-reported time nor a local block start.
-    private var sessionResetDate: Date? {
-        if let r = monitor.snapshot.planUsage?.fiveHour?.resetsAt { return r }
-        return monitor.snapshot.blockStart?.addingTimeInterval(5 * 3600)
-    }
-
-    /// Human countdown to the session reset — "2h 13m left", "45m left", or
-    /// "resetting…" in the final seconds. Surfaced prominently under the gauge
-    /// because "how long until my quota refreshes" is the question users open
-    /// the card to answer.
-    private func sessionResetCountdown() -> String {
-        guard let end = sessionResetDate else { return "—" }
-        let remaining = end.timeIntervalSince(Date())
-        guard remaining > 0 else { return "resetting…" }
-        let h = Int(remaining) / 3600
-        let m = (Int(remaining) % 3600) / 60
-        if h > 0 { return "\(h)h \(m)m left" }
-        return "\(m)m left"
-    }
-
-    /// Estimated working time = elapsed time since the current 5h block began.
-    /// Reflects how long Claude has been actively engaged this session.
-    private func workingTimeString() -> String {
-        guard let start = monitor.snapshot.blockStart else { return "—" }
-        let elapsed = max(0, Date().timeIntervalSince(start))
-        let h = Int(elapsed) / 3600
-        let m = (Int(elapsed) % 3600) / 60
-        if h > 0 { return String(format: "%dh %02dm", h, m) }
-        return String(format: "%dm", m)
-    }
-}
-
-/// Horizontal stacked bar showing per-model usage. Each segment is
-/// colored by its `ModelDot` family color; the legend shows name +
-/// percentage + dollar cost so users can tell at a glance which model
-/// is doing the work AND which is doing the spending (Opus ≈ 5× Sonnet).
-struct ModelSplitBar: View {
-    struct Segment: Identifiable {
-        let label: String
-        let fraction: Double
-        let cost: Double
-        let color: Color
-        var id: String { label }
-    }
-    let title: String
-    let segments: [Segment]
-
-    /// Lays out segment widths so the bar never overflows its track. The naïve
-    /// `width * fraction` overflows once the (n-1) inter-segment gaps and the
-    /// per-segment minimum are added in. Here we lay out within the width that
-    /// remains after spacing, apply a `minWidth` floor, then rescale the result
-    /// down if the floors pushed the total back over budget.
-    static func segmentWidths(fractions: [Double],
-                              available: CGFloat,
-                              spacing: CGFloat,
-                              minWidth: CGFloat = 2) -> [CGFloat] {
-        guard !fractions.isEmpty else { return [] }
-        let usable = max(0, available - spacing * CGFloat(fractions.count - 1))
-        let total = fractions.reduce(0, +)
-        // Distribute `usable` by fraction, flooring each at `minWidth`.
-        var widths = fractions.map { f -> CGFloat in
-            let raw = total > 0 ? usable * CGFloat(f / total) : usable / CGFloat(fractions.count)
-            return max(minWidth, raw)
-        }
-        // The floors can push the sum back over `usable`; rescale to fit.
-        let sum = widths.reduce(0, +)
-        if sum > usable, sum > 0 {
-            let scale = usable / sum
-            widths = widths.map { $0 * scale }
-        }
-        return widths
-    }
-
-    @Environment(\.ccTheme) private var theme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .tracking(0.5)
-                    .foregroundColor(theme.text(.tertiary))
-                Spacer()
-                // Inline legend: dot + name + percent + cost per segment.
-                ForEach(segments) { seg in
-                    HStack(spacing: 4) {
-                        Circle().fill(seg.color).frame(width: 6, height: 6)
-                        Text("\(seg.label) \(Int((seg.fraction * 100).rounded()))%")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundColor(theme.text(.secondary))
-                            .monospacedDigit()
-                        if seg.cost > 0 {
-                            Text(String(format: "$%.2f", seg.cost))
-                                .font(.system(size: 9, weight: .medium, design: .rounded))
-                                .foregroundColor(theme.text(.tertiary))
-                                .monospacedDigit()
-                        }
-                    }
-                }
-            }
-            GeometryReader { geo in
-                let spacing: CGFloat = 1
-                let widths = Self.segmentWidths(
-                    fractions: segments.map(\.fraction),
-                    available: geo.size.width,
-                    spacing: spacing)
-                HStack(spacing: spacing) {
-                    ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
-                        Capsule()
-                            .fill(seg.color)
-                            .frame(width: widths[idx])
-                    }
-                }
-            }
-            .frame(height: 4)
-        }
-    }
-}
-
-/// HIG-aligned linear progress indicator with gauge-style semantic
-/// coloring: the fill shifts from the cool accent gradient to a warm
-/// amber as utilization climbs past 80% — same rule the iOS Battery
-/// gauge follows. Below 80% reads as "you have headroom", above signals
-/// "approaching limit".
-struct ProgressTrack: View {
-    let progress: Double
-    @Environment(\.ccTheme) private var theme
-
-    private var fillColors: [Color] {
-        if progress >= 0.95 {
-            // Critical — saturated coral. Same vibe as system red without
-            // shouting.
-            return [Color(red: 1.0, green: 0.45, blue: 0.40),
-                    Color(red: 1.0, green: 0.30, blue: 0.30)]
-        } else if progress >= 0.8 {
-            // Caution — amber gradient. Reads as warm but not alarming.
-            return [Color(red: 1.0, green: 0.75, blue: 0.35),
-                    Color(red: 1.0, green: 0.55, blue: 0.25)]
-        }
-        return [theme.accentStart, theme.accentEnd]
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                // Empty track behind the colored fill.
-                Capsule()
-                    .fill(theme.progressTrack)
-                Capsule()
-                    .fill(
-                        LinearGradient(colors: fillColors,
-                                       startPoint: .leading, endPoint: .trailing)
-                    )
-                    .frame(width: max(4, geo.size.width * progress))
-                    .animation(.easeInOut(duration: 0.35), value: progress)
-            }
-        }
-        .frame(height: 5)
-    }
-}
-
-/// Left light: identifies which Claude model is active. Color = family,
-/// secondary cues encode variants:
-///   • a soft halo ring → 1M-context variant
-///   • a faint inner sparkle pulse → extended-thinking enabled
-struct ModelDot: View {
-    let model: String?
-    let traits: ModelTraits
-    @State private var blink = false
-
-    var body: some View {
-        ZStack {
-            // Halo for 1M-context variant.
-            if traits.oneMillionContext {
-                Circle()
-                    .strokeBorder(color.opacity(0.55), lineWidth: 1)
-                    .frame(width: 14, height: 14)
-            }
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-                .shadow(color: color.opacity(0.7), radius: 4)
-                // Subtle blink for sessions using extended thinking —
-                // a session-level cue, not a per-phase indicator.
-                .opacity(traits.thinking ? (blink ? 0.15 : 1.0) : 1.0)
-                .animation(traits.thinking
-                           ? .easeInOut(duration: 0.55).repeatForever(autoreverses: true)
-                           : .default,
-                           value: blink)
-        }
-        .frame(width: 14, height: 14)
-        .onAppear { blink = true }
-    }
-
-    private var color: Color {
-        ModelDot.colorForModel(model)
-    }
-
-    static func colorForModel(_ model: String?) -> Color {
-        guard let m = model?.lowercased() else { return Color.gray.opacity(0.55) }
-        // Fable / Mythos — flagship rose-magenta. The warmest, most saturated
-        // hue in the set so the top-tier model stands apart from the cool
-        // Claude trio (purple/blue/mint) and the teal Codex, while staying
-        // clear of the amber reserved for "approaching limit".
-        if m.contains("fable") || m.contains("mythos") {
-            return Color(red: 1.00, green: 0.42, blue: 0.72)
-        }
-        // Opus — electric royal purple. Bright and saturated so it reads
-        // crisp at the 8pt dot scale, but still distinctively "Opus" in
-        // the purple family.
-        if m.contains("opus")   { return Color(red: 0.72, green: 0.42, blue: 1.00) }
-        // Sonnet — modern blue. Confident contemporary indigo-blue,
-        // balanced between cool and neutral. The kind of blue you see in
-        // well-designed productivity apps.
-        if m.contains("sonnet") { return Color(red: 0.28, green: 0.58, blue: 1.00) }
-        // Haiku — energetic mint-green. Light and alive, mirroring Haiku's
-        // speed-and-lightness positioning. Distinct from both the regal
-        // purple and the cool blue.
-        if m.contains("haiku")  { return Color(red: 0.28, green: 0.88, blue: 0.65) }
-        // OpenAI Codex (gpt-5.x / codex) — signature teal-green. Distinct from
-        // all three Claude families so the "auto" pill makes the active
-        // provider obvious at a glance.
-        if m.hasPrefix("gpt") || m.contains("codex")
-            || m.contains("o3") || m.contains("o4") {
-            return Color(red: 0.10, green: 0.72, blue: 0.55)
-        }
-        return Color.gray.opacity(0.55)
-    }
-}
-
-/// Right light: working status. Color = state, animation = liveness.
-///   • green slow pulse → actively writing
-///   • orange fast blink → waiting on the user
-///   • gray steady → idle
-struct WorkDot: View {
-    let state: WorkState
-    @State private var pulse = false
-
-    private var color: Color {
-        switch state {
-        case .idle: return Color.gray.opacity(0.55)
-        // Working uses pulsing-dots in both the header and dropdown
-        // now, so this only renders for awaiting-decision (and the
-        // unused idle case as a defensive fallback). Green = ready,
-        // run-light convention.
-        case .working: return Color(red: 1.0, green: 0.55, blue: 0.15)
-        case .awaitingDecision: return Color.green
-        }
-    }
-
-    private var period: Double? {
-        switch state {
-        case .idle: return nil
-        case .working: return 0.9
-        case .awaitingDecision: return 0.45
-        }
-    }
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 8, height: 8)
-            .shadow(color: color.opacity(0.6), radius: 4)
-            .scaleEffect(period != nil && pulse ? 1.35 : 1.0)
-            .opacity(period != nil && pulse
-                     ? (state == .awaitingDecision ? 0.3 : 0.6)
-                     : 1.0)
-            .animation(period.map { .easeInOut(duration: $0).repeatForever(autoreverses: true) }
-                       ?? .default,
-                       value: pulse)
-            .onAppear { pulse = true }
-    }
-}
-
-/// FINISH state checkmark with a soft breathing pulse. The work dot
-/// (which used to convey "waiting on you" via a fast blink) is hidden
-/// in the awaiting state, so this carries that signal — gentler than
-/// the dot's old fast strobe but persistent enough to draw the eye.
-struct PulsingCheckmark: View {
-    @State private var pulse = false
-
-    var body: some View {
-        Image(systemName: "checkmark.circle.fill")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundColor(.green)
-            .shadow(color: Color.green.opacity(0.55), radius: pulse ? 4 : 1.5)
-            .scaleEffect(pulse ? 1.12 : 1.0)
-            .opacity(pulse ? 0.88 : 1.0)
-            .animation(
-                .easeInOut(duration: 0.95).repeatForever(autoreverses: true),
-                value: pulse
-            )
-            .onAppear { pulse = true }
-    }
-}
-
-/// Three small dots that pulse in sequence — the canonical "loading"
-/// indicator from iOS Dynamic Island. Each dot fades on a staggered
-/// delay so the row reads as a left-to-right wave.
-struct PulsingDots: View {
-    let color: Color
-    @State private var animating = false
-
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<3, id: \.self) { i in
-                Circle()
-                    .fill(color)
-                    .frame(width: 4, height: 4)
-                    .opacity(animating ? 1.0 : 0.25)
-                    .animation(
-                        .easeInOut(duration: 0.6)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(i) * 0.18),
-                        value: animating
-                    )
-            }
-        }
-        .onAppear { animating = true }
     }
 }

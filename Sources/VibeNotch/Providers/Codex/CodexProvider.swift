@@ -72,6 +72,7 @@ final class CodexProvider: UsageProvider {
         var sawPaths = Set<URL>()
         var mostRecent: (URL, Date)?
         var allEntries: [CodexEntry] = []
+        var activeSessionFiles = 0
 
         for case let url as URL in enumerator {
             guard url.pathExtension == "jsonl",
@@ -95,6 +96,10 @@ final class CodexProvider: UsageProvider {
 
             // Cache hit: file unchanged. Its plan window persists in `filePlan`.
             if let cached = fileCache[url], cached.size == size, cached.mtime == mtime {
+                if let ts = cached.entries.last?.ts,
+                   now.timeIntervalSince(ts) < activeThreshold {
+                    activeSessionFiles += 1
+                }
                 allEntries.append(contentsOf: cached.entries)
                 continue
             }
@@ -125,6 +130,10 @@ final class CodexProvider: UsageProvider {
             entry.size = size
             fileCache[url] = entry
 
+            if let ts = entry.entries.last?.ts,
+               now.timeIntervalSince(ts) < activeThreshold {
+                activeSessionFiles += 1
+            }
             allEntries.append(contentsOf: entry.entries)
         }
 
@@ -153,18 +162,15 @@ final class CodexProvider: UsageProvider {
 
         // Drive activity off the newest parsed token_count entry, not file
         // mtime (which bumps on any write). See ClaudeProvider for the full
-        // rationale. `mostRecent` (mtime) still selects the tail to read.
-        let lastEntryTs = allEntries.map(\.ts).max()
-        snap.lastActivity = lastEntryTs
-        if let ts = lastEntryTs, now.timeIntervalSince(ts) < activeThreshold {
-            snap.activeSessions = 1
-        }
+        // rationale. `activeSessions` counts session files with a turn inside
+        // the active window; `mostRecent` (mtime) still selects the tail to read.
+        snap.lastActivity = allEntries.map(\.ts).max()
+        snap.activeSessions = activeSessionFiles
 
         // Today's totals — deltas are already unique per turn, no dedup needed.
         for e in allEntries where e.ts >= startOfToday {
             snap.tokensToday += e.deltaTokens
             snap.costToday += e.cost
-            snap.tokensByModelToday[e.model, default: 0] += e.deltaTokens
         }
 
         // Current fixed 5h block (token/cost figures; plan-% comes from

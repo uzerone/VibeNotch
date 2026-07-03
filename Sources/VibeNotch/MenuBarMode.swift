@@ -94,7 +94,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
         // No plan budget (e.g. Codex, or pre-login Claude) — show block tokens.
         if s.tokensBlock > 0 {
-            return formatTokens(s.tokensBlock)
+            return UsageFormat.tokens(s.tokensBlock)
         }
         return "—"
     }
@@ -136,6 +136,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let pop = NSPopover()
         pop.behavior = .transient            // auto-closes when you click away
         pop.delegate = self
+        // The card is dark-only; force the popover chrome (arrow, corner
+        // material) dark too, so light-mode users don't get a light arrow
+        // pointing at a black card.
+        pop.appearance = NSAppearance(named: .darkAqua)
         pop.contentViewController = NSHostingController(
             rootView: MenuBarCard(monitor: monitor)
                 .environment(\.ccTheme, Theme(resolved: .dark))
@@ -148,21 +152,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         popover = nil
     }
 
-    // MARK: - Formatting (kept local so the controller has no dependency on the
-    // island view's private helpers)
-
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
         f.timeStyle = .short
         f.dateStyle = .none
         return f
     }()
-
-    static func formatTokens(_ n: Int) -> String {
-        if n >= 1_000_000 { return String(format: "%.2fM", Double(n) / 1_000_000) }
-        if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
-        return "\(n)"
-    }
 }
 
 /// The compact card shown when the menu-bar item is clicked. Mirrors the
@@ -173,6 +168,11 @@ private struct MenuBarCard: View {
     @ObservedObject var monitor: UsageMonitor
     @Environment(\.ccTheme) private var theme
     @State private var showSettings = false
+    /// Slow display clock for the countdown strings — the snapshot publisher
+    /// is deduplicated, so an open popover needs its own tick to stay fresh.
+    @State private var now = Date()
+
+    private static let displayTick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private var s: UsageSnapshot { monitor.snapshot }
 
@@ -193,15 +193,18 @@ private struct MenuBarCard: View {
         // gets a little more breathing room.
         .frame(width: 372)
         .background(theme.panelFill)
+        .onReceive(Self.displayTick) { now = $0 }
     }
 
     private var stats: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
             divider
-            sessionBlock
+            // Shared with the island's expanded card — same sections, same
+            // snapshot, so the two faces always agree.
+            SessionSection(snapshot: s, now: now)
             divider
-            todayBlock
+            TodaySection(snapshot: s)
             divider
             toolRow
         }
@@ -266,116 +269,7 @@ private struct MenuBarCard: View {
         }
     }
 
-    @ViewBuilder
-    private var sessionBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            label(s.planUsage?.fiveHour != nil ? "SESSION" : "5-HOUR BLOCK")
-            if let five = s.planUsage?.fiveHour {
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text("\(Int((max(0, min(1, five.utilization)) * 100).rounded()))%")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .foregroundColor(theme.text(.primary))
-                        .monospacedDigit()
-                    Text("used")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(theme.text(.tertiary))
-                    Spacer()
-                }
-                ProgressTrack(progress: max(0, min(1, five.utilization)))
-            } else {
-                HStack(alignment: .lastTextBaseline, spacing: 6) {
-                    Text(MenuBarController.formatTokens(s.tokensBlock))
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundColor(theme.text(.primary))
-                        .monospacedDigit()
-                    Text("tokens")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
-                        .foregroundColor(theme.text(.tertiary))
-                    Spacer()
-                    Text(String(format: "$%.2f", s.costBlock))
-                        .font(.system(size: 26, weight: .bold, design: .rounded))
-                        .foregroundColor(theme.text(.primary))
-                        .monospacedDigit()
-                }
-            }
-            resetRow
-        }
-    }
-
-    private var resetRow: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "clock")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(theme.text(.tertiary))
-            Text(countdown)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundColor(theme.text(.secondary))
-                .monospacedDigit()
-            Text("· resets \(resetClock)")
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundColor(theme.text(.tertiary))
-                .monospacedDigit()
-            Spacer()
-        }
-    }
-
-    private var todayBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            label("TODAY")
-            HStack(alignment: .lastTextBaseline, spacing: 6) {
-                Text(String(format: "$%.2f", s.costToday))
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundColor(theme.text(.primary))
-                    .monospacedDigit()
-                Spacer()
-                Text(MenuBarController.formatTokens(s.tokensToday))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundColor(theme.text(.secondary))
-                    .monospacedDigit()
-                Text("tokens")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundColor(theme.text(.tertiary))
-            }
-        }
-    }
-
-    private func label(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .tracking(0.6)
-            .foregroundColor(theme.text(.tertiary))
-    }
-
-    // MARK: - Derived strings
-
     private var modelName: String {
-        IslandView.displayName(for: s.currentModel)
+        ModelDisplay.displayName(for: s.currentModel)
     }
-
-    private var resetDate: Date? {
-        if let r = s.planUsage?.fiveHour?.resetsAt { return r }
-        return s.blockStart?.addingTimeInterval(5 * 3600)
-    }
-
-    private var countdown: String {
-        guard let end = resetDate else { return "—" }
-        let remaining = end.timeIntervalSince(Date())
-        guard remaining > 0 else { return "resetting…" }
-        let h = Int(remaining) / 3600
-        let m = (Int(remaining) % 3600) / 60
-        if h > 0 { return "\(h)h \(m)m left" }
-        return "\(m)m left"
-    }
-
-    private var resetClock: String {
-        guard let end = resetDate else { return "—" }
-        return Self.clockFormatter.string(from: end)
-    }
-
-    private static let clockFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.timeStyle = .short
-        f.dateStyle = .none
-        return f
-    }()
 }

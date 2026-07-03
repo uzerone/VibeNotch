@@ -14,20 +14,14 @@ enum Provider: String, Equatable {
 /// instance per provider and merges their snapshots.
 ///
 /// `computeSnapshot` is the file-derived hot path (cheap on cache hits, runs
-/// on a background queue). `refreshPlan` is the slower async plan-% refresh —
-/// Claude fetches it over HTTP; Codex derives it from local logs inside
-/// `computeSnapshot`, so it leaves `refreshPlan` as the default no-op.
+/// on a background queue). Claude's slower HTTP plan-% refresh lives outside
+/// this protocol — the coordinator drives `ClaudeProvider.fetchPlan()`
+/// directly on its own timer because it needs the typed `FetchError`; Codex
+/// derives plan-% from local logs inside `computeSnapshot`.
 protocol UsageProvider: AnyObject {
     var provider: Provider { get }
 
     /// Recompute usage from disk for the given `now`. Returns `nil` when the
     /// provider has no data directory at all (e.g. the tool isn't installed).
     func computeSnapshot(now: Date) -> ProviderSnapshot?
-
-    /// Refresh authoritative plan-% out of band (network, etc.). Default no-op.
-    func refreshPlan() async
-}
-
-extension UsageProvider {
-    func refreshPlan() async {}
 }

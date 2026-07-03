@@ -18,7 +18,13 @@ final class UsageMonitor: ObservableObject {
     /// Async plan-% for Claude is refreshed on a slower timer than the 5s file
     /// poll; cache it here so the file poll doesn't stomp it back to nil.
     private var lastClaudePlan: PlanUsage?
-    private var lastClaudePlanError: ClaudePlanFetcher.FetchError?
+    private var lastClaudePlanHint: String?
+    /// Exponential backoff after the usage endpoint rate-limits us (HTTP 429):
+    /// polls are skipped until this instant. Doubling 2 → 4 → 8 → 16 min (the
+    /// cap), reset by the next successful fetch. Other errors don't back off —
+    /// a transport blip is usually local and the next 60s poll is fine.
+    private var planBackoffUntil: Date?
+    private var planBackoffLevel = 0
 
     /// Serial queue prevents two refreshes from racing on provider caches.
     private let refreshQueue = DispatchQueue(label: "VibeNotch.refresh", qos: .utility)
@@ -26,16 +32,25 @@ final class UsageMonitor: ObservableObject {
     func start() {
         refresh()
         // 5s is a good cadence for the lights; provider caches make most ticks
-        // near-free, so we don't gain much by going slower.
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // near-free, so we don't gain much by going slower. Timers go into
+        // `.common` mode so polling doesn't stall while the user drags the
+        // free-move window (event-tracking pauses `.default`-mode timers);
+        // the tolerance lets the system coalesce wakeups and save power.
+        let t = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
         // Plan-% rarely moves fast and the endpoint is rate-sensitive — 60s
         // is plenty and matches what the web UI seems to poll at.
         refreshPlanUsage()
-        planTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        let pt = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             self?.refreshPlanUsage()
         }
+        pt.tolerance = 5
+        RunLoop.main.add(pt, forMode: .common)
+        planTimer = pt
     }
 
     func stop() {
@@ -47,6 +62,8 @@ final class UsageMonitor: ObservableObject {
     // MARK: - Plan % (Claude / HTTP)
 
     private func refreshPlanUsage() {
+        // Still inside a 429 backoff window — stay off the endpoint.
+        if let until = planBackoffUntil, Date() < until { return }
         planTask?.cancel()
         planTask = Task { [weak self] in
             guard let self else { return }
@@ -54,28 +71,35 @@ final class UsageMonitor: ObservableObject {
                 let usage = try await self.claude.fetchPlan()
                 await MainActor.run {
                     self.lastClaudePlan = usage
-                    self.lastClaudePlanError = nil
+                    self.lastClaudePlanHint = nil
+                    self.planBackoffUntil = nil
+                    self.planBackoffLevel = 0
                     if self.snapshot.provider == .claude {
                         self.snapshot.planUsage = usage
-                        self.snapshot.planUsageError = nil
+                        self.snapshot.planUsageHint = nil
                     }
                 }
             } catch let err as ClaudePlanFetcher.FetchError {
                 await MainActor.run {
-                    self.lastClaudePlanError = err
+                    if case .http(429) = err {
+                        self.planBackoffLevel = min(self.planBackoffLevel + 1, 4)
+                        let delay = 120.0 * pow(2, Double(self.planBackoffLevel - 1))
+                        self.planBackoffUntil = Date().addingTimeInterval(delay)
+                    }
+                    self.lastClaudePlanHint = ClaudePlanFetcher.hint(for: err)
                     // Stale data is more useful than nothing — only clear on
                     // explicit auth failure.
                     if case .unauthorized = err { self.lastClaudePlan = nil }
                     if self.snapshot.provider == .claude {
-                        self.snapshot.planUsageError = err
+                        self.snapshot.planUsageHint = self.lastClaudePlanHint
                         if case .unauthorized = err { self.snapshot.planUsage = nil }
                     }
                 }
             } catch {
                 await MainActor.run {
-                    self.lastClaudePlanError = .transport(error)
+                    self.lastClaudePlanHint = ClaudePlanFetcher.hint(for: .transport(error))
                     if self.snapshot.provider == .claude {
-                        self.snapshot.planUsageError = .transport(error)
+                        self.snapshot.planUsageHint = self.lastClaudePlanHint
                     }
                 }
             }
@@ -107,9 +131,12 @@ final class UsageMonitor: ObservableObject {
                     if let p = self.lastClaudePlan, !p.isExpired(asOf: now) {
                         w.planUsage = p
                     }
-                    w.planUsageError = self.lastClaudePlanError
+                    w.planUsageHint = self.lastClaudePlanHint
                 }
-                self.snapshot = w
+                // Most 5s ticks produce an identical snapshot; skipping the
+                // no-op publish saves a full SwiftUI diff of the island (and
+                // the hit-area/click-through churn that follows it).
+                if self.snapshot != w { self.snapshot = w }
             }
         }
     }
