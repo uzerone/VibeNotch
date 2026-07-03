@@ -67,9 +67,24 @@ struct IslandGeometry: Equatable {
         return CGSize(width: 384, height: topBand + 300)
     }
 
-    /// Convenience for the docked default — used by AppDelegate when
-    /// sizing the window in notch mode.
+    /// Convenience for the docked default.
     var expandedSize: CGSize { expandedSize(dockedUnderNotch: hasPhysicalNotch) }
+
+    /// Extra card height when the plan-fetch hint row is visible — the one
+    /// optional row added after the 300pt base height was tuned. Without
+    /// this, the hint pushed the model-split bar past the card's bottom edge,
+    /// where the mask clipped it in half.
+    static let planHintExtraHeight: CGFloat = 22
+
+    /// Fixed window size — the tallest possible card (expanded + hint row)
+    /// plus a little slack. The window is transparent and click-through
+    /// outside the pill rect, so oversizing the canvas costs nothing; the
+    /// drawn card sizes itself within it. Used by AppDelegate for the window
+    /// and by the view as the outer bound when publishing the hit rect.
+    var canvasSize: CGSize {
+        let s = expandedSize
+        return CGSize(width: s.width, height: s.height + Self.planHintExtraHeight + 8)
+    }
 
     /// Corner radius for the expanded card — fixed, modern rounded-rect feel
     /// rather than a giant pill.
@@ -203,9 +218,20 @@ struct IslandView: View {
         }
     }
 
+    /// Whether the plan-fetch hint row is currently part of the card —
+    /// it adds height, so the expanded silhouette must grow with it.
+    private var showsPlanHint: Bool {
+        monitor.snapshot.planUsage?.fiveHour == nil
+            && monitor.snapshot.planUsageHint != nil
+    }
+
     private var size: CGSize {
         let docked = geometry.hasPhysicalNotch && !isFreeMove
-        if expanded { return geometry.expandedSize(dockedUnderNotch: docked) }
+        if expanded {
+            var s = geometry.expandedSize(dockedUnderNotch: docked)
+            if showsPlanHint { s.height += IslandGeometry.planHintExtraHeight }
+            return s
+        }
         if hasDropdownState { return geometry.activeSize }
         return geometry.idleSize
     }
@@ -353,6 +379,9 @@ struct IslandView: View {
         .animation(uiSpring, value: monitor.snapshot.currentModelTraits.fastMode)
         .animation(uiSpring, value: monitor.snapshot.activeSessions)
         .animation(uiSpring, value: hideLightsForActiveState)
+        // The hint row growing/shrinking the expanded card interpolates
+        // through the same spring instead of snapping.
+        .animation(uiSpring, value: showsPlanHint)
     }
 
     /// Publishes the visible pill rect in NSHostingView coordinates so the
@@ -362,7 +391,7 @@ struct IslandView: View {
         let rect: CGRect
         if visible {
             let pill = size
-            let outer = geometry.expandedSize
+            let outer = geometry.canvasSize
             rect = CGRect(
                 x: (outer.width - pill.width) / 2,
                 y: outer.height - pill.height,

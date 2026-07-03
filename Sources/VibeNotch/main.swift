@@ -80,11 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         monitor.start()
 
-        // Window is sized to the largest state (expanded) and never resized
-        // for state transitions — SwiftUI animates the pill inside. This
-        // keeps the cursor inside the window during expand/collapse so hover
-        // detection is stable.
-        let win = IslandWindow(contentRect: NSRect(origin: .zero, size: config.geometry.expandedSize))
+        // Window is sized to the largest state (expanded card + hint row
+        // headroom) and never resized for state transitions — SwiftUI
+        // animates the pill inside. This keeps the cursor inside the window
+        // during expand/collapse so hover detection is stable.
+        let win = IslandWindow(contentRect: NSRect(origin: .zero, size: config.geometry.canvasSize))
         let view = IslandView(monitor: monitor, config: config, hitArea: hitArea)
         let host = IslandHostingView(rootView: view, hitArea: hitArea)
         host.autoresizingMask = [.width, .height]
@@ -202,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? NSScreen.screens.first!
         let geo = geometry(for: screen)
         config.geometry = geo
-        let size = geo.expandedSize
+        let size = geo.canvasSize
 
         let origin: CGPoint
         // Accept the saved origin only if the pill comes back genuinely
@@ -260,9 +260,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func anchor(to screen: NSScreen) {
         let geo = geometry(for: screen)
         config.geometry = geo
-        // Window size is fixed to the expanded geometry; only its top-center
+        // Window size is fixed to the canvas geometry; only its top-center
         // anchor moves when switching screens.
-        positionTopCenter(on: screen, size: geo.expandedSize, animated: false)
+        positionTopCenter(on: screen, size: geo.canvasSize, animated: false)
         window?.orderFrontRegardless()
     }
 

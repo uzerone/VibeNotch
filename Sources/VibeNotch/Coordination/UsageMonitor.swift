@@ -20,9 +20,10 @@ final class UsageMonitor: ObservableObject {
     private var lastClaudePlan: PlanUsage?
     private var lastClaudePlanHint: String?
     /// Exponential backoff after the usage endpoint rate-limits us (HTTP 429):
-    /// polls are skipped until this instant. Doubling 2 → 4 → 8 → 16 min (the
-    /// cap), reset by the next successful fetch. Other errors don't back off —
-    /// a transport blip is usually local and the next 60s poll is fine.
+    /// polls are skipped until this instant. The server's Retry-After wins
+    /// when present; otherwise 5 → 10 → 20 min (the cap), reset by the next
+    /// successful fetch. Other errors don't back off — a transport blip is
+    /// usually local and the next 60s poll is fine.
     private var planBackoffUntil: Date?
     private var planBackoffLevel = 0
 
@@ -81,12 +82,25 @@ final class UsageMonitor: ObservableObject {
                 }
             } catch let err as ClaudePlanFetcher.FetchError {
                 await MainActor.run {
-                    if case .http(429) = err {
-                        self.planBackoffLevel = min(self.planBackoffLevel + 1, 4)
-                        let delay = 120.0 * pow(2, Double(self.planBackoffLevel - 1))
-                        self.planBackoffUntil = Date().addingTimeInterval(delay)
+                    switch err {
+                    case .rateLimited(let retryAfter):
+                        // Transient and self-healing: back off (the server's
+                        // Retry-After wins when present) and stay quiet. The
+                        // card already falls back to local figures — a
+                        // permanent orange "rate limited" banner is alarm
+                        // fatigue, not information.
+                        self.planBackoffLevel = min(self.planBackoffLevel + 1, 3)
+                        let fallback = 300.0 * pow(2, Double(self.planBackoffLevel - 1))
+                        self.planBackoffUntil = Date()
+                            .addingTimeInterval(max(retryAfter ?? 0, fallback))
+                        self.lastClaudePlanHint = nil
+                    case .transport:
+                        // Offline / network blip — equally non-actionable.
+                        self.lastClaudePlanHint = nil
+                    default:
+                        // Actionable (login, payload change) — surface it.
+                        self.lastClaudePlanHint = ClaudePlanFetcher.hint(for: err)
                     }
-                    self.lastClaudePlanHint = ClaudePlanFetcher.hint(for: err)
                     // Stale data is more useful than nothing — only clear on
                     // explicit auth failure.
                     if case .unauthorized = err { self.lastClaudePlan = nil }
@@ -96,10 +110,11 @@ final class UsageMonitor: ObservableObject {
                     }
                 }
             } catch {
+                // Non-FetchError failures are transport-shaped — stay quiet.
                 await MainActor.run {
-                    self.lastClaudePlanHint = ClaudePlanFetcher.hint(for: .transport(error))
+                    self.lastClaudePlanHint = nil
                     if self.snapshot.provider == .claude {
-                        self.snapshot.planUsageHint = self.lastClaudePlanHint
+                        self.snapshot.planUsageHint = nil
                     }
                 }
             }

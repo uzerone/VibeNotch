@@ -20,19 +20,24 @@ final class ClaudePlanFetcher {
     enum FetchError: Error {
         case noToken
         case unauthorized   // 401 — token expired, user needs `claude /login`
+        /// 429 — the endpoint asked us to slow down. Carries the server's
+        /// Retry-After (seconds) when it sent one, so the monitor's backoff
+        /// can honor it instead of guessing.
+        case rateLimited(retryAfter: TimeInterval?)
         case http(Int)
         case decode
         case transport(Error)
     }
 
-    /// Human-readable hint shown in the UI when the fetch fails.
+    /// Human-readable hint shown in the UI when the fetch fails. Only the
+    /// actionable cases ever reach the card — the monitor swallows the
+    /// transient ones (rate-limit, network) because there's nothing the user
+    /// can do about them and the local figures keep flowing.
     static func hint(for err: FetchError) -> String {
         switch err {
         case .noToken: return "no claude /login token in keychain"
         case .unauthorized: return "token expired — run claude /login"
-        // 429 is transient and self-healing (the monitor backs off and
-        // retries) — say that, instead of leaking a bare status code.
-        case .http(429): return "rate limited — retrying automatically"
+        case .rateLimited: return "rate limited — retrying automatically"
         case .http(let s): return "usage endpoint \(s)"
         case .decode: return "usage payload changed"
         case .transport: return "network error"
@@ -84,13 +89,23 @@ final class ClaudePlanFetcher {
                 let (d2, r2) = try await session.data(for: req)
                 let s2 = (r2 as? HTTPURLResponse)?.statusCode ?? 0
                 if s2 == 401 { throw FetchError.unauthorized }
+                if s2 == 429 { throw FetchError.rateLimited(retryAfter: Self.retryAfterSeconds(r2)) }
                 guard (200..<300).contains(s2) else { throw FetchError.http(s2) }
                 return try parseResponse(d2)
             }
             throw FetchError.unauthorized
         }
+        if status == 429 { throw FetchError.rateLimited(retryAfter: Self.retryAfterSeconds(response)) }
         guard (200..<300).contains(status) else { throw FetchError.http(status) }
         return try parseResponse(data)
+    }
+
+    /// The numeric-seconds form of a 429's Retry-After header, if present.
+    /// (The HTTP-date form is rare on APIs and not worth parsing here.)
+    private static func retryAfterSeconds(_ response: URLResponse) -> TimeInterval? {
+        guard let http = response as? HTTPURLResponse,
+              let v = http.value(forHTTPHeaderField: "Retry-After") else { return nil }
+        return TimeInterval(v.trimmingCharacters(in: .whitespaces))
     }
 
     private func parseResponse(_ data: Data) throws -> PlanUsage {
