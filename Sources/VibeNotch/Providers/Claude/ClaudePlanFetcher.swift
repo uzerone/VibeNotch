@@ -44,6 +44,45 @@ final class ClaudePlanFetcher {
         }
     }
 
+    /// Records why a fetch failed (timestamped, appended) next to
+    /// last-usage.json. Transient failures are deliberately silent in the UI,
+    /// which makes an on-disk trace the only way to diagnose a missing plan
+    /// gauge after the fact. The log is trimmed by deletion once it grows
+    /// past ~32KB — it's a debugging breadcrumb, not an archive.
+    private func logFailure(_ reason: String) {
+        guard let dir = Self.diagnosticsDir() else { return }
+        let url = dir.appendingPathComponent("last-fetch-error.log")
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > 32_768 {
+            try? FileManager.default.removeItem(at: url)
+        }
+        let line = "\(Self.logStamp.string(from: Date()))  \(reason)\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(line.utf8))
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
+    }
+
+    private static let logStamp: ISO8601DateFormatter = ISO8601DateFormatter()
+
+    /// Log-and-rethrow helper so every failure path leaves a breadcrumb.
+    private func fail(_ err: FetchError) -> FetchError {
+        let reason: String
+        switch err {
+        case .noToken: reason = "no token in keychain"
+        case .unauthorized: reason = "401 unauthorized"
+        case .rateLimited(let ra):
+            reason = "429 rate limited (Retry-After: \(ra.map { String(Int($0)) } ?? "none"))"
+        case .http(let s): reason = "http \(s)"
+        case .decode: reason = "decode failure"
+        case .transport(let e): reason = "transport: \((e as NSError).domain) \((e as NSError).code)"
+        }
+        logFailure(reason)
+        return err
+    }
+
     /// One-shot fetch. Returns the parsed budgets or throws.
     ///
     /// Token acquisition is two-tier:
@@ -62,7 +101,7 @@ final class ClaudePlanFetcher {
             token = cached
         } else {
             fromCache = false
-            guard let fresh = readOAuthToken() else { throw FetchError.noToken }
+            guard let fresh = readOAuthToken() else { throw fail(.noToken) }
             token = fresh
             storeCachedToken(fresh)
         }
@@ -75,7 +114,7 @@ final class ClaudePlanFetcher {
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: req)
-        } catch { throw FetchError.transport(error) }
+        } catch { throw fail(.transport(error)) }
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401 {
@@ -88,15 +127,15 @@ final class ClaudePlanFetcher {
                 req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 let (d2, r2) = try await session.data(for: req)
                 let s2 = (r2 as? HTTPURLResponse)?.statusCode ?? 0
-                if s2 == 401 { throw FetchError.unauthorized }
-                if s2 == 429 { throw FetchError.rateLimited(retryAfter: Self.retryAfterSeconds(r2)) }
-                guard (200..<300).contains(s2) else { throw FetchError.http(s2) }
+                if s2 == 401 { throw fail(.unauthorized) }
+                if s2 == 429 { throw fail(.rateLimited(retryAfter: Self.retryAfterSeconds(r2))) }
+                guard (200..<300).contains(s2) else { throw fail(.http(s2)) }
                 return try parseResponse(d2)
             }
-            throw FetchError.unauthorized
+            throw fail(.unauthorized)
         }
-        if status == 429 { throw FetchError.rateLimited(retryAfter: Self.retryAfterSeconds(response)) }
-        guard (200..<300).contains(status) else { throw FetchError.http(status) }
+        if status == 429 { throw fail(.rateLimited(retryAfter: Self.retryAfterSeconds(response))) }
+        guard (200..<300).contains(status) else { throw fail(.http(status)) }
         return try parseResponse(data)
     }
 
@@ -112,7 +151,7 @@ final class ClaudePlanFetcher {
         writeDiagnostic(data)
 
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw FetchError.decode
+            throw fail(.decode)
         }
 
         // The response has been observed in two shapes; pick the right one.
@@ -165,12 +204,17 @@ final class ClaudePlanFetcher {
     }
 
     private func writeDiagnostic(_ data: Data) {
+        guard let dir = Self.diagnosticsDir() else { return }
+        try? data.write(to: dir.appendingPathComponent("last-usage.json"))
+    }
+
+    private static func diagnosticsDir() -> URL? {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory,
                                            in: .userDomainMask).first?
             .appendingPathComponent("VibeNotch", isDirectory: true)
-        guard let dir else { return }
+        guard let dir else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try? data.write(to: dir.appendingPathComponent("last-usage.json"))
+        return dir
     }
 
     private static let iso: ISO8601DateFormatter = {

@@ -43,13 +43,15 @@ final class UsageMonitor: ObservableObject {
         t.tolerance = 1
         RunLoop.main.add(t, forMode: .common)
         timer = t
-        // Plan-% rarely moves fast and the endpoint is rate-sensitive — 60s
-        // is plenty and matches what the web UI seems to poll at.
+        // Plan-% rarely moves fast and the endpoint enforces a shared
+        // per-account quota (observed 429 + Retry-After ~12min while heavy
+        // parallel Claude Code sessions were also polling it). 120s keeps the
+        // gauge fresh enough while leaving quota for Claude Code's own UI.
         refreshPlanUsage()
-        let pt = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+        let pt = Timer(timeInterval: 120, repeats: true) { [weak self] _ in
             self?.refreshPlanUsage()
         }
-        pt.tolerance = 5
+        pt.tolerance = 10
         RunLoop.main.add(pt, forMode: .common)
         planTimer = pt
     }
