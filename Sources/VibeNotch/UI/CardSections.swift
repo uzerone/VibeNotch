@@ -21,7 +21,7 @@ struct SectionCaption: View {
     var body: some View {
         Text(text)
             .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .tracking(0.6)
+            .tracking(0.8)
             .foregroundColor(theme.text(.tertiary))
     }
 }
@@ -65,18 +65,20 @@ struct SessionSection: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             SectionCaption(snapshot.planUsage?.fiveHour != nil ? "SESSION" : "5-HOUR BLOCK")
             if let five = snapshot.planUsage?.fiveHour {
                 // Single hero: the session-used %. TODAY below carries spend,
                 // and the gauge carries the rest.
                 HStack(alignment: .lastTextBaseline, spacing: 6) {
+                    // The card's single hero — the only bold element on the
+                    // face, sized so the eye lands here first by construction.
                     Text(UsageFormat.percent(five.utilization))
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 40, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text(.primary))
                         .monospacedDigit()
                     Text("used")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.tertiary))
                     Spacer()
                 }
@@ -85,17 +87,20 @@ struct SessionSection: View {
                 // Dual-hero treatment: tokens on the left, dollars on the
                 // right — both at the same display size so neither visually
                 // outranks the other.
+                // Dual-hero fallback: 32pt (not the single hero's 40) — two
+                // numbers plus a label must share the ~280pt row, and 40pt
+                // pairs overflow it once the token count grows past 5 glyphs.
                 HStack(alignment: .lastTextBaseline, spacing: 6) {
                     Text(UsageFormat.tokens(snapshot.tokensBlock))
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text(.primary))
                         .monospacedDigit()
                     Text("tokens")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.tertiary))
                     Spacer()
                     Text(String(format: "$%.2f", snapshot.costBlock))
-                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text(.primary))
                         .monospacedDigit()
                 }
@@ -149,21 +154,29 @@ struct TodaySection: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             SectionCaption("TODAY")
+            // One welded left cluster — dollars · tokens read as a single
+            // fact instead of two edge-anchored islands. Semibold 17 keeps it
+            // clearly subordinate to the 40pt SESSION hero above.
             HStack(alignment: .lastTextBaseline, spacing: 6) {
                 Text(String(format: "$%.2f", snapshot.costToday))
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .foregroundColor(theme.text(.primary))
                     .monospacedDigit()
-                Spacer()
+                // A typographic middot, not a Circle — a 2pt shape dropped to
+                // the text baseline read as a stray period.
+                Text("·")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundColor(theme.text(.quaternary))
                 Text(UsageFormat.tokens(snapshot.tokensToday))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundColor(theme.text(.secondary))
                     .monospacedDigit()
                 Text("tokens")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundColor(theme.text(.tertiary))
+                Spacer()
             }
         }
     }

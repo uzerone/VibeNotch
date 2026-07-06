@@ -26,29 +26,59 @@ final class HitArea: ObservableObject {
 struct IslandGeometry: Equatable {
     var notchWidth: CGFloat
     var notchHeight: CGFloat
+    /// Host screen width, used to derive `scale`. Defaults to the DynamicNotch
+    /// reference width so the placeholder geometry (before a real screen is
+    /// bound) computes a sane scale of 1.0.
+    var screenWidth: CGFloat = 1440
+
     /// True when the host screen has a real camera-housing notch; false for
     /// external displays, where we just lay out as a top-center pill.
     var hasPhysicalNotch: Bool { notchWidth > 0 }
 
-    /// Collapsed island width is locked to the notch width so the top row
-    /// visually IS the notch.
-    var collapsedWidth: CGFloat { max(notchWidth, 180) }
+    // MARK: - study (DynamicNotch) base geometry
+    //
+    // These mirror DynamicNotch's `NotchViewModel.updateDimensions()` +
+    // `NotchModel` exactly, so the collapsed pill hugs the real notch the way
+    // the reference engine does.
 
-    /// Idle collapsed: just a pill the shape of the notch — visually
+    /// Screen-relative scale. `max(0.35, screenWidth / 1440)` — the reference
+    /// 1440pt base width, floored so tiny screens don't collapse the pill.
+    var scale: CGFloat { max(0.35, screenWidth / 1440) }
+
+    /// Collapsed base width. On a real notch: the camera-housing width plus a
+    /// small scaled margin (`notchWidth + 14·scale`) so the pill sits flush
+    /// around the housing. On external / notchless displays: `190·scale`.
+    var baseWidth: CGFloat {
+        hasPhysicalNotch ? notchWidth + 14 * scale : 190 * scale
+    }
+
+    /// Collapsed base height. On a real notch: the safe-area inset (the notch's
+    /// own height). On external displays: `25·scale`.
+    var baseHeight: CGFloat {
+        hasPhysicalNotch ? notchHeight : 25 * scale
+    }
+
+    /// Base corner radius — `baseHeight / 3`, per the reference. Collapsed
+    /// corners derive from this: bottom = `baseRadius`, top flare =
+    /// `baseRadius − 4`.
+    var baseRadius: CGFloat { baseHeight / 3 }
+
+    /// Collapsed island width is the study base width — it hugs the real notch
+    /// rather than being floored to a fixed minimum.
+    var collapsedWidth: CGFloat { baseWidth }
+
+    /// Idle collapsed: a pill the exact shape of the notch — visually
     /// indistinguishable from the camera housing.
     var idleSize: CGSize {
-        CGSize(width: collapsedWidth, height: max(notchHeight, 24))
+        CGSize(width: baseWidth, height: baseHeight)
     }
 
     /// Active collapsed: notch row + an info row dropping down below it.
     var activeSize: CGSize {
-        CGSize(width: collapsedWidth, height: max(notchHeight, 24) + dropdownHeight)
+        CGSize(width: baseWidth, height: baseHeight + dropdownHeight)
     }
 
     var dropdownHeight: CGFloat { 30 }
-
-    var activeCornerRadius: CGFloat { 20 }
-    var idleCornerRadius: CGFloat { idleSize.height / 2 }
 
     /// Expanded card: a modern rounded rectangle that grows downward from
     /// the notch line. Width is independent of the notch. When docked
@@ -64,7 +94,10 @@ struct IslandGeometry: Equatable {
     /// bottom row (login toggle + keychain pill + Quit).
     func expandedSize(dockedUnderNotch: Bool) -> CGSize {
         let topBand = dockedUnderNotch ? notchHeight : 0
-        return CGSize(width: 384, height: topBand + 300)
+        // 316: the 300pt content budget plus the breathing margins added all
+        // around (top +4, bottom +8) so the roomier insets don't squeeze the
+        // dense state (gauge + weekly + multi-model split) off the card.
+        return CGSize(width: 384, height: topBand + 316)
     }
 
     /// Convenience for the docked default.
@@ -101,10 +134,15 @@ struct IslandView: View {
     @ObservedObject var appearance: AppearanceStore = .shared
     @ObservedObject var placement: PlacementStore = .shared
     @ObservedObject var expandTrigger: ExpandTriggerStore = .shared
+    @ObservedObject var motionPref: AnimationPreferenceStore = .shared
 
     @State private var expanded = false
     @State private var showSettings = false
     @State private var finishVisibleUntil: Date?
+    /// The pill's live rendered size, updated continuously by a GeometryReader
+    /// as the silhouette morphs. `updateHitArea()` prefers this over the
+    /// discrete target `size` so the click region tracks the animation.
+    @State private var livePillSize: CGSize = .zero
     /// Slow display clock for the time-derived strings (countdowns, "Xm ago",
     /// block progress). The snapshot publisher is deduplicated, so without
     /// this tick an idle card's "2h 13m left" would freeze.
@@ -138,6 +176,57 @@ struct IslandView: View {
         reduceMotion
             ? .easeInOut(duration: 0.22)
             : .spring(response: 0.55, dampingFraction: 0.82)
+    }
+
+    /// Notch-emergence transition for the content that swaps between the
+    /// collapsed pill and the expanded card. Instead of a flat cross-fade, the
+    /// content scales + blurs + shifts as if it grew out of (or retreated into)
+    /// the black notch housing — the signature Dynamic Island morph. Reduce
+    /// Motion falls back to a plain fade.
+    ///
+    /// `isExpandedPresentation` picks the flavor: the card unfurls downward
+    /// from the notch line, while the collapsed dropdown puffs from the notch
+    /// center. Geometry is read live so the compensation offsets track the
+    /// pill's actual width/height in the current placement.
+    private func contentTransition(expandedPresentation: Bool) -> AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .notchContent(
+            notchWidth: geometry.collapsedWidth,
+            notchHeight: expandedPresentation ? size.height : geometry.activeSize.height,
+            baseHeight: geometry.baseHeight,
+            isExpandedPresentation: expandedPresentation
+        )
+    }
+
+    /// The coordinated spring bundle that drives the island's silhouette morph.
+    /// Selected from the user's motion preset; the floating capsule (no physical
+    /// notch) gets slightly lower damping for a touch more bounce, matching the
+    /// iPhone Dynamic Island feel. This replaces VibeNotch's two ad-hoc springs
+    /// as the driver for the size/shape morph so idle↔active↔expanded all move
+    /// with one coherent, tuned response.
+    private var islandAnimations: NotchAnimations {
+        let isCapsule = isFreeMove || !geometry.hasPhysicalNotch
+        return .preset(motionPref.preset, isDynamicIsland: isCapsule)
+    }
+
+    /// The spring the silhouette resize rides. Under Reduce Motion it collapses
+    /// to a brief fade-equivalent ease so the pill still settles without a
+    /// bouncy morph.
+    private var surfaceSpring: Animation {
+        reduceMotion ? .easeInOut(duration: 0.2) : islandAnimations.surfaceResize
+    }
+
+    /// The *bottom* corner radius of the pill/card silhouette (fed to
+    /// `MorphNotchShape.bottomCornerRadius`).
+    ///
+    /// • Expanded card: the designed rounded-rect radius.
+    /// • Collapsed: the study `baseRadius` (= `baseHeight / 3`), so the pill's
+    ///   lower corners round exactly like the reference DynamicNotch pill.
+    /// • Free-move: the `fullyRounded` shape path uses this on all four corners,
+    ///   giving a capsule when `baseRadius` ≈ half the height.
+    private var morphCornerRadius: CGFloat {
+        if expanded { return geometry.expandedCornerRadius }
+        return geometry.baseRadius
     }
 
     /// On a real notched MacBook display in notch placement, the collapsed
@@ -235,12 +324,6 @@ struct IslandView: View {
         if hasDropdownState { return geometry.activeSize }
         return geometry.idleSize
     }
-    private var cornerRadius: CGFloat {
-        if expanded { return geometry.expandedCornerRadius }
-        return (hasDropdownState)
-            ? geometry.activeCornerRadius
-            : geometry.idleCornerRadius
-    }
 
     /// The card's background silhouette: a solid fill + a gradient hairline
     /// edge + layered contact/ambient shadows so it reads as a panel floating
@@ -276,34 +359,56 @@ struct IslandView: View {
                     Group {
                         if showSettings {
                             SettingsView(closeAction: {
-                                withAnimation(uiSpring) {
-                                    showSettings = false
-                                }
+                                // Settings enter/exit is an instant swap — no
+                                // spring/morph. The card stays put; only its
+                                // contents switch between stats and settings.
+                                showSettings = false
                             })
                         } else {
                             expandedContent
                         }
                     }
-                    .padding(.horizontal, 20)
-                    // Symmetric vertical insets: same visible margin top
-                    // and bottom. In notch placement, the top inset adds
-                    // `notchHeight` so the visible 16pt margin starts
-                    // below the camera housing, matching the 16pt below.
+                    // Horizontal inset sizes the content to fit *inside* the
+                    // NotchShape's throat (48pt top flare over a physical
+                    // notch), plus a real breathing margin so nothing reads
+                    // as touching the silhouette. 56pt docked / 32pt elsewhere.
+                    .padding(.horizontal, (geometry.hasPhysicalNotch && !isFreeMove) ? 56 : 32)
+                    // Top inset clears the camera housing AND the visible
+                    // throat (flare 48 closes at y=48 = notchHeight+16), then
+                    // adds margin so the header doesn't sit right at the
+                    // throat's lip.
                     .padding(.top, (geometry.hasPhysicalNotch && !isFreeMove)
-                                   ? geometry.notchHeight + 16
+                                   ? geometry.notchHeight + 20
                                    : 16)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, 20)
                     // Top-align so an overflowing SettingsView never gets
                     // vertically centered — that was clipping the header
                     // ("Settings" + back button) above the visible card.
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .transition(.opacity)
+                    // Unfurl downward from the notch line instead of fading in.
+                    .transition(contentTransition(expandedPresentation: true))
                 } else {
                     collapsedContent
-                        .transition(.opacity)
+                        // Puff out from / retreat into the notch center.
+                        .transition(contentTransition(expandedPresentation: false))
                 }
             }
             .frame(width: size.width, height: size.height)
+            // Publish the *live* rendered pill size while it morphs, so the
+            // click hit-area tracks the animating silhouette instead of jumping
+            // to the target size the instant a transition starts. During a
+            // spring resize SwiftUI runs intermediate layout passes, so this
+            // reader fires continuously and keeps clicks aligned with what's
+            // actually on screen. Placed inside the frame → reports the animated
+            // frame; the outer scaleEffect (drop-in) is a visibility flip where
+            // precise hit-testing doesn't matter.
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { livePillSize = proxy.size }
+                        .onChange(of: proxy.size) { livePillSize = $0 }
+                }
+            )
             // `mask` instead of `clipShape`: keeps the rounded silhouette
             // without forcing the offscreen render pass that breaks the
             // NSVisualEffectView blur in glass mode.
@@ -317,10 +422,14 @@ struct IslandView: View {
                      ? ((expanded || hasDropdownState) ? 1 : idleOpacity)
                      : 0)
             .animation(dropSpring, value: visible)
-            // Idle ↔ active is a size change (not a visibility flip) now that
-            // the idle pill stays rendered — animate it with the same drop
-            // spring so the info row still slides out from the notch.
-            .animation(dropSpring, value: hasDropdownState)
+            // The silhouette morph — idle ↔ active (dropdown) ↔ expanded — now
+            // rides the tuned island spring so the width/height/corner-radius
+            // interpolate as one coherent Dynamic-Island motion instead of the
+            // old ad-hoc drop spring. `size` and `morphCornerRadius` are both
+            // functions of `hasDropdownState`/`expanded`, so animating on those
+            // keys carries the whole continuous morph.
+            .animation(surfaceSpring, value: hasDropdownState)
+            .animation(surfaceSpring, value: expanded)
             .onHover { hovering in
                 // Hover-to-expand only. In click mode the cursor entering or
                 // leaving the pill must not change the expanded state — taps
@@ -329,7 +438,11 @@ struct IslandView: View {
                 // Hold expanded open while the settings panel is in use, even
                 // if the cursor briefly slips outside the card.
                 if !hovering && showSettings { return }
-                withAnimation(uiSpring) {
+                // Expand rides the tuned island spring so the silhouette and its
+                // content grow together coherently (the `.transition` and the
+                // frame/radius `.animation(surfaceSpring, value: expanded)` then
+                // share one response).
+                withAnimation(surfaceSpring) {
                     expanded = hovering
                 }
             }
@@ -341,7 +454,7 @@ struct IslandView: View {
                 guard isClickToExpand else { return }
                 // Leaving Settings open while collapsing would strand the panel;
                 // collapse always returns to the stats face.
-                withAnimation(uiSpring) {
+                withAnimation(surfaceSpring) {
                     if expanded { showSettings = false }
                     expanded.toggle()
                 }
@@ -355,6 +468,10 @@ struct IslandView: View {
         .onChange(of: visible) { _ in updateHitArea() }
         .onChange(of: expanded) { _ in updateHitArea() }
         .onChange(of: monitor.snapshot.hasActivity) { _ in updateHitArea() }
+        // Track the live morphing frame — this fires on every intermediate
+        // layout pass during a spring resize, keeping the click region glued to
+        // the animating silhouette.
+        .onChange(of: livePillSize) { _ in updateHitArea() }
         .onChange(of: size.width) { _ in updateHitArea() }
         .onChange(of: size.height) { _ in updateHitArea() }
         .onChange(of: geometry.expandedSize.width) { _ in updateHitArea() }
@@ -390,7 +507,9 @@ struct IslandView: View {
     private func updateHitArea() {
         let rect: CGRect
         if visible {
-            let pill = size
+            // Prefer the live morphing size; fall back to the discrete target
+            // before the GeometryReader has reported (first frame / onAppear).
+            let pill = livePillSize == .zero ? size : livePillSize
             let outer = geometry.canvasSize
             rect = CGRect(
                 x: (outer.width - pill.width) / 2,
@@ -407,21 +526,51 @@ struct IslandView: View {
     }
 
     /// The pill silhouette.
+    /// The pill / card silhouette — a `MorphNotchShape` (VibeNotch's port of
+    /// DynamicNotch's `NotchShape`).
     ///
-    /// • Notch placement: flat top edge so it hangs from the menu bar /
-    ///   notch like a true dropdown tab — only bottom corners are rounded.
-    /// • Free-move placement: fully rounded since the pill isn't docked
-    ///   to any edge.
-    private var shape: UnevenRoundedRectangle {
-        let top: CGFloat = isFreeMove ? cornerRadius : 0
-        return UnevenRoundedRectangle(
-            topLeadingRadius: top,
-            bottomLeadingRadius: cornerRadius,
-            bottomTrailingRadius: cornerRadius,
-            topTrailingRadius: top,
-            style: .continuous
+    /// Docked under the notch, the top edge is full-width and flat at the notch
+    /// line, and the top two corners tuck **inward** (a concave throat) as the
+    /// sides descend, so the surface reads as growing out of the black camera
+    /// housing exactly like the reference. The bottom corners are convex. The
+    /// expanded card keeps the same throat — content is sized to fit inside the
+    /// throat rather than the shape being changed to fit the content.
+    ///
+    /// Free-move detaches from any edge, so there it's a fully-rounded capsule
+    /// (all four corners convex) instead.
+    private var shape: some InsettableShape {
+        MorphNotchShape(
+            topFlareRadius: topFlareRadius,
+            bottomCornerRadius: morphCornerRadius,
+            fullyRounded: isFreeMove
         )
     }
+
+    /// How far the top corners tuck inward — the concave notch throat that
+    /// makes the surface read as growing out of the notch line.
+    ///
+    /// • Free-move: 0 — the fully-rounded capsule path ignores it anyway.
+    /// • On an external display (notch placement, no camera housing): 0 — a
+    ///   concave top hanging under a plain menu bar would look wrong, so flat.
+    /// • Collapsed pill over a physical notch: the study `baseRadius − 4`
+    ///   (≈ 7pt) — a tuck sized to the narrow pill so it folds into the housing.
+    /// • Expanded card over a physical notch: a larger, deliberately *visible*
+    ///   throat (`expandedTopFlare`, 48pt). The card's top ≈ 32pt band is hidden
+    ///   behind the camera housing, so the flare MUST exceed the notch height to
+    ///   show the concave throat *below* the housing — 48pt leaves ≈ 16pt of the
+    ///   throat visible at the menu-bar line. Content is sized to fit inside the
+    ///   resulting 288pt usable mid-width.
+    private var topFlareRadius: CGFloat {
+        if isFreeMove { return 0 }
+        guard geometry.hasPhysicalNotch else { return 0 }
+        return expanded ? Self.expandedTopFlare : max(0, geometry.baseRadius - 4)
+    }
+
+    /// Pronounced top reverse-corner for the expanded card. Must exceed the
+    /// notch height (~32pt) so the inward throat shows below the camera housing;
+    /// 48pt reveals ≈ 16pt of throat while the 288pt usable mid-width still
+    /// clears the 280pt content (at 52pt horizontal padding).
+    private static let expandedTopFlare: CGFloat = 48
 
 /// Collapsed pill. Layout depends on whether the pill is currently
     /// docked under a physical notch.
@@ -677,65 +826,77 @@ struct IslandView: View {
 
     /// Hairline rule between sections — same faint chrome line the Settings
     /// panel uses, so a divided card reads consistently with the rest of the UI.
+    /// The one remaining rule — a fainter line than before, used only above
+    /// the BY MODEL block (a different content class than the metric column).
     private var sectionDivider: some View {
-        Divider().background(theme.chrome(0.08))
+        Divider().background(theme.chrome(0.06))
     }
 
     private var expandedContent: some View {
         let t = theme
-        // 16pt between sections, each pair split by a hairline `sectionDivider`
-        // so the card reads as distinct blocks (Header · Session · Today ·
-        // Models). The information diet keeps it calm rather than crowded.
+        // Calm-minimal rhythm: 16pt of whitespace *is* the section divider —
+        // no hairlines in the main stack. Inside each section the spacing is
+        // 6pt, so the card reads on exactly two gap sizes and the eye glides.
         return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 ModelDot(model: monitor.snapshot.currentModel,
                          traits: monitor.snapshot.currentModelTraits)
+                // The model name is the flexible element in this row — it
+                // truncates when space runs short, so the status cluster on
+                // the right never has to wrap.
                 Text(modelDisplayName)
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundColor(t.text(.primary))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                 ForEach(modelTraitTags, id: \.label) { tag in
                     traitChip(tag.label, help: tag.help)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    // Status only shown when there's something active to
-                    // communicate. Idle = no row — the model name +
-                    // metrics already tell you everything.
-                    if monitor.snapshot.workState != .idle {
-                        HStack(spacing: 6) {
-                            // Match the dropdown's visual language — pulsing
-                            // three-dot indicator while working, tinted by
-                            // the same workingWordColor so the header and
-                            // dropdown agree on what state means.
-                            if monitor.snapshot.workState == .working {
-                                PulsingDots(color: workingWordColor)
-                            } else {
-                                WorkDot(state: monitor.snapshot.workState)
-                            }
-                            Text(headerLabel)
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                .foregroundColor(headerLabelColor)
-                            if monitor.snapshot.activeSessions > 1 {
-                                Text("×\(monitor.snapshot.activeSessions)")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                                    .foregroundColor(t.text(.secondary))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .chromeBackground(in: Capsule(), fill: t.chrome(0.10))
-                                    .help("\(monitor.snapshot.activeSessions) active sessions")
-                            }
+                Spacer(minLength: 6)
+                // Status cluster sits inline, immediately left of the gear —
+                // one row, so the two stop fighting for the top-right corner.
+                // The freshness age folds in as "· 12s ago" instead of
+                // stacking beneath. Idle = empty cluster, gear stands alone.
+                // `fixedSize` + layoutPriority keep the words on ONE line —
+                // when the row is tight the model name truncates instead of
+                // "Working" wrapping to two lines.
+                if monitor.snapshot.workState != .idle {
+                    HStack(spacing: 6) {
+                        // Match the dropdown's visual language — pulsing
+                        // three-dot indicator while working, tinted by the
+                        // same workingWordColor so the header and dropdown
+                        // agree on what state means.
+                        if monitor.snapshot.workState == .working {
+                            PulsingDots(color: workingWordColor)
+                        } else {
+                            WorkDot(state: monitor.snapshot.workState)
                         }
+                        Text(headerLabel)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundColor(headerLabelColor)
+                            .lineLimit(1)
                         if let last = monitor.snapshot.lastActivity {
-                            Text(UsageFormat.relative(last, now: now))
+                            Text("· \(UsageFormat.relative(last, now: now))")
                                 .font(.system(size: 9, weight: .medium, design: .rounded))
                                 .foregroundColor(t.text(.tertiary))
+                                .lineLimit(1)
+                        }
+                        if monitor.snapshot.activeSessions > 1 {
+                            Text("×\(monitor.snapshot.activeSessions)")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                                .foregroundColor(t.text(.secondary))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .chromeBackground(in: Capsule(), fill: t.chrome(0.10))
+                                .help("\(monitor.snapshot.activeSessions) active sessions")
                         }
                     }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
                 }
                 Button {
-                    withAnimation(uiSpring) {
-                        showSettings = true
-                    }
+                    // Instant swap into settings — no fancy animation.
+                    showSettings = true
                 } label: {
                     Image(systemName: "gearshape.fill")
                         .font(.system(size: 11, weight: .semibold))
@@ -746,14 +907,11 @@ struct IslandView: View {
                 .buttonStyle(.plain)
             }
 
-            sectionDivider
-
             // SESSION and TODAY are the shared card sections — the same
             // views the menu-bar popover renders, so the two faces always
-            // agree on layout and numbers.
+            // agree on layout and numbers. No hairlines between them: the
+            // 16pt root rhythm is the separator.
             SessionSection(snapshot: monitor.snapshot, now: now)
-
-            sectionDivider
 
             TodaySection(snapshot: monitor.snapshot)
 
@@ -764,7 +922,7 @@ struct IslandView: View {
             // an absent section.
             if modelSplitWorthShowing {
                 sectionDivider
-                ModelSplitBar(title: "Session by model", segments: modelSplitSegments)
+                ModelSplitBar(title: "BY MODEL", segments: modelSplitSegments)
                     .help("Current session's usage split by model")
             }
         }

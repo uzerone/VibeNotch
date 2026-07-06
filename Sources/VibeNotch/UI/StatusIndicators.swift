@@ -196,7 +196,7 @@ struct ProgressTrack: View {
                     .animation(.easeInOut(duration: 0.35), value: progress)
             }
         }
-        .frame(height: 5)
+        .frame(height: 6)
     }
 }
 
@@ -244,14 +244,33 @@ struct ModelSplitBar: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(title)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .tracking(0.5)
-                    .foregroundColor(theme.text(.tertiary))
-                Spacer()
-                // Inline legend: dot + name + percent + cost per segment.
+        // De-crammed three-row layout: caption alone, then the bar, then the
+        // legend on its own left-origin row. Nothing right-justified into the
+        // card edge, so cost figures never kiss the border, and the bar gets
+        // real air instead of being pinched under a crowded title line.
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .tracking(0.8)
+                .foregroundColor(theme.text(.tertiary))
+            GeometryReader { geo in
+                let spacing: CGFloat = 1
+                let widths = Self.segmentWidths(
+                    fractions: segments.map(\.fraction),
+                    available: geo.size.width,
+                    spacing: spacing)
+                HStack(spacing: spacing) {
+                    ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
+                        Capsule()
+                            .fill(seg.color)
+                            .frame(width: widths[idx])
+                    }
+                }
+            }
+            .frame(height: 6)
+            // Legend below the bar: dot + name + percent + cost per segment,
+            // anchored left with the trailing spacer eating the empty width.
+            HStack(spacing: 14) {
                 ForEach(segments) { seg in
                     HStack(spacing: 4) {
                         Circle().fill(seg.color).frame(width: 6, height: 6)
@@ -267,22 +286,8 @@ struct ModelSplitBar: View {
                         }
                     }
                 }
+                Spacer(minLength: 0)
             }
-            GeometryReader { geo in
-                let spacing: CGFloat = 1
-                let widths = Self.segmentWidths(
-                    fractions: segments.map(\.fraction),
-                    available: geo.size.width,
-                    spacing: spacing)
-                HStack(spacing: spacing) {
-                    ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
-                        Capsule()
-                            .fill(seg.color)
-                            .frame(width: widths[idx])
-                    }
-                }
-            }
-            .frame(height: 4)
         }
     }
 }

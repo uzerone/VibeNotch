@@ -293,7 +293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // menu bar instead.
         let notchH = safeTop > 0 ? safeTop : menuBarH
 
-        return IslandGeometry(notchWidth: notchW, notchHeight: notchH)
+        return IslandGeometry(notchWidth: notchW, notchHeight: notchH, screenWidth: screen.frame.width)
     }
 
     private func positionTopCenter(on screen: NSScreen, size: NSSize, animated: Bool) {

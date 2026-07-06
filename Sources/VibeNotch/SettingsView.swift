@@ -12,114 +12,93 @@ struct SettingsView: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Header: centered title with back chip overlaid on the leading
-            // edge. Built as a Text + .overlay so the title's centering is
-            // calculated against the full row width, independent of the
-            // chip's size.
+        // System-Settings-style panel: captions + whitespace do the grouping
+        // (matching the stats face's calm-minimal rhythm), controls are
+        // neutral elevated segments — no accent-washed blocks — and the
+        // destructive Quit is quiet.
+        VStack(alignment: .leading, spacing: 14) {
+            // Header: centered title, with a compact circular back button on
+            // the leading edge — the mirror of the gear that opened us.
             Text("Settings")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundColor(theme.text(.primary))
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: 28)
+                .frame(minHeight: 24)
                 .overlay(alignment: .leading) {
                     Button(action: closeAction) {
-                        HStack(spacing: 5) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 11, weight: .bold))
-                            Text("Back")
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        }
-                        .foregroundColor(theme.text(.primary))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(theme.chrome(0.12)))
-                        .contentShape(Capsule())
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(theme.text(.tertiary))
+                            .frame(width: 22, height: 22)
+                            .chromeBackground(in: Circle(), fill: theme.chrome(0.08))
                     }
                     .buttonStyle(.plain)
                     .help("Back to stats")
                 }
 
-            Divider().background(theme.chrome(0.08))
+            Divider().background(theme.chrome(0.06))
 
-            // Placement picker: anchored under the notch, or free-floating
-            // anywhere the user drags it.
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Placement")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .tracking(0.5)
-                    .foregroundColor(theme.text(.tertiary))
-                HStack(spacing: 3) {
-                    ForEach(Placement.allCases) { option in
-                        PlacementChip(
-                            option: option,
-                            selected: placement.mode == option,
-                            theme: theme
-                        ) {
-                            placement.mode = option
-                        }
-                    }
+            // Placement: anchored under the notch, free-floating, or menu bar.
+            VStack(alignment: .leading, spacing: 6) {
+                SectionCaption("PLACEMENT")
+                SegmentedRow(
+                    options: Placement.allCases,
+                    isSelected: { placement.mode == $0 },
+                    select: { placement.mode = $0 },
+                    theme: theme
+                )
+            }
+
+            // Expand trigger: open the stats card on hover, or on click.
+            VStack(alignment: .leading, spacing: 6) {
+                SectionCaption("EXPAND")
+                SegmentedRow(
+                    options: ExpandTrigger.allCases,
+                    isSelected: { expandTrigger.current == $0 },
+                    select: { expandTrigger.current = $0 },
+                    theme: theme
+                )
+            }
+
+            // Login row: label left, switch right — one setting per row, the
+            // System Settings way, so nothing ever wraps.
+            HStack {
+                Text("Run at login")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundColor(theme.text(.secondary))
+                    .lineLimit(1)
+                Spacer()
+                GreenSwitch(isOn: $launchAtLogin)
+            }
+            .onChange(of: launchAtLogin) { newValue in
+                do {
+                    try LoginItem.set(enabled: newValue)
+                    loginError = nil
+                } catch {
+                    loginError = error.localizedDescription
+                    launchAtLogin = LoginItem.isEnabled
                 }
             }
 
-            Divider().background(theme.chrome(0.08))
-
-            // Expand-trigger picker: open the stats card on hover, or on click.
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Expand")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .tracking(0.5)
-                    .foregroundColor(theme.text(.tertiary))
-                HStack(spacing: 3) {
-                    ForEach(ExpandTrigger.allCases) { option in
-                        ExpandChip(
-                            option: option,
-                            selected: expandTrigger.current == option,
-                            theme: theme
-                        ) {
-                            expandTrigger.current = option
-                        }
-                    }
-                }
-            }
-
-            Divider().background(theme.chrome(0.08))
-
-            // Bottom row: toggle on the leading edge, Quit on the trailing
-            // edge. Sharing a row instead of giving Quit its own bottom
-            // band kills the dead space and keeps the destructive action
-            // visually separate from primary toggles.
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Text("Run at login")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundColor(theme.text(.secondary))
-                    GreenSwitch(isOn: $launchAtLogin)
-                }
-                .onChange(of: launchAtLogin) { newValue in
-                    do {
-                        try LoginItem.set(enabled: newValue)
-                        loginError = nil
-                    } catch {
-                        loginError = error.localizedDescription
-                        launchAtLogin = LoginItem.isEnabled
-                    }
-                }
+            // Bottom row: keychain trust status (quiet, tappable to refresh)
+            // on the left; Quit on the right as red text on neutral chrome —
+            // destructive but not shouting.
+            HStack {
                 // Keychain trust indicator (Claude only). Green checkmark = the
-                // user granted access; orange lock = denied or no `claude /login`
-                // token in the Keychain yet. Codex needs no keychain — its
-                // plan-% is read straight from the local ~/.codex session logs.
+                // user granted access; orange lock = denied or no `claude
+                // /login` token in the Keychain yet. Codex needs no keychain —
+                // its plan-% is read straight from local ~/.codex session logs.
                 HStack(spacing: 4) {
                     Image(systemName: keychainGranted ? "checkmark.shield.fill" : "lock.slash.fill")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(keychainGranted ? .green : .orange)
                     Text(keychainGranted ? "Keychain (Claude)" : "No access")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundColor(theme.text(.secondary))
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundColor(theme.text(.tertiary))
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .chromeBackground(in: Capsule(), fill: theme.chrome(0.08))
+                .chromeBackground(in: Capsule(), fill: theme.chrome(0.06))
                 .help(keychainGranted
                     ? "Keychain access granted — Claude plan-usage % is the exact figure from Anthropic. (Codex plan-% comes from local ~/.codex logs — no keychain needed.)"
                     : "No Keychain access — run `claude /login` or relaunch VibeNotch and click Always Allow when prompted. (This is for Claude only; Codex needs no keychain.)")
@@ -132,10 +111,10 @@ struct SettingsView: View {
                 } label: {
                     Text("Quit")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundColor(.white)
+                        .foregroundColor(Color(nsColor: .systemRed))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.red.opacity(0.55)))
+                        .chromeBackground(in: Capsule(), fill: theme.chrome(0.08))
                 }
                 .buttonStyle(.plain)
                 .help("Quit VibeNotch")
@@ -151,74 +130,65 @@ struct SettingsView: View {
     }
 }
 
-/// Two-option chip for the Placement picker. Same visual treatment as the
-/// Expand chip so the Settings panel reads as one consistent control.
-private struct PlacementChip: View {
-    let option: Placement
-    let selected: Bool
-    let theme: Theme
-    let action: () -> Void
-
-    @State private var hover = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: option.systemImage)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(option.label)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .foregroundColor(selected ? .white : theme.text(.secondary))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(
-                    selected ? theme.accentStart : theme.chrome(hover ? 0.14 : 0.08)))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(option.help)
-    }
+/// Shared shape of the two picker option types — label + SF symbol + tooltip.
+private protocol SegmentOption: Identifiable, Equatable {
+    var label: String { get }
+    var systemImage: String { get }
+    var help: String { get }
 }
 
-/// Two-option chip for the Expand-trigger picker (Hover / Click). Same visual
-/// treatment as the Placement / Appearance chips so the panel reads as one
-/// consistent set of controls.
-private struct ExpandChip: View {
-    let option: ExpandTrigger
-    let selected: Bool
-    let theme: Theme
-    let action: () -> Void
+extension Placement: SegmentOption {}
+extension ExpandTrigger: SegmentOption {}
 
-    @State private var hover = false
+/// macOS-native-feeling segmented control: one recessed container, equal
+/// segments, the selected one elevated on a *neutral* fill (no accent wash),
+/// exactly like the pickers in System Settings' dark appearance.
+private struct SegmentedRow<Option: SegmentOption>: View {
+    let options: [Option]
+    let isSelected: (Option) -> Bool
+    let select: (Option) -> Void
+    let theme: Theme
+
+    @State private var hovered: Option.ID?
 
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: option.systemImage)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(option.label)
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .fixedSize()
+        HStack(spacing: 2) {
+            ForEach(options) { option in
+                let selected = isSelected(option)
+                Button {
+                    select(option)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: option.systemImage)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(option.label)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                    }
+                    .foregroundColor(selected ? theme.text(.primary) : theme.text(.tertiary))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(selected
+                                  ? theme.chrome(0.18)
+                                  : theme.chrome(hovered == option.id ? 0.08 : 0.0))
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .onHover { inside in
+                    if inside { hovered = option.id }
+                    else if hovered == option.id { hovered = nil }
+                }
+                .help(option.help)
             }
-            .foregroundColor(selected ? .white : theme.text(.secondary))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(
-                    selected ? theme.accentStart : theme.chrome(hover ? 0.14 : 0.08)))
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(option.help)
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(theme.chrome(0.06))
+        )
     }
 }
 
@@ -237,9 +207,11 @@ struct GreenSwitch: View {
 
     var body: some View {
         Capsule()
+            // Off track must stay visible on the pure-black card —
+            // quaternaryLabelColor vanished there, leaving a floating knob.
             .fill(isOn
                   ? Color(nsColor: .systemGreen)
-                  : Color(nsColor: .quaternaryLabelColor))
+                  : Color.white.opacity(0.16))
             .frame(width: trackWidth, height: trackHeight)
             .overlay(
                 Circle()
@@ -249,7 +221,7 @@ struct GreenSwitch: View {
                     .offset(x: isOn ? travel : -travel)
             )
             .overlay(
-                Capsule().strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+                Capsule().strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
             )
             .contentShape(Capsule())
             .onTapGesture {

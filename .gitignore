@@ -22,6 +22,9 @@ DerivedData/
 # Claude Code local state
 /.claude/
 
+# DynamicNotch fork — kept locally as a design/motion reference only, not shipped
+/study/
+
 # Build artifacts — users compile their own .dmg via scripts/build-dmg.sh
 *.dmg
 
