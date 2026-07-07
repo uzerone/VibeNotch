@@ -65,10 +65,18 @@ struct SessionSection: View {
     let now: Date
     @Environment(\.ccTheme) private var theme
 
-    /// Per-model-family slices of this session block, for the in-track split
-    /// and the legend row. Variants of one family (opus-4-6, opus-4-7 …)
-    /// collapse into one slice with the shared family color; shares sum to 1.
-    private var familySegments: [TrackSegment] {
+    /// A model family's share of this session block, for the legend row.
+    private struct FamilyShare: Identifiable {
+        let label: String
+        let color: Color
+        let share: Double
+        var id: String { label }
+    }
+
+    /// Per-model-family shares of this session block, for the legend row.
+    /// Variants of one family (opus-4-6, opus-4-7 …) collapse into one entry
+    /// with the shared family color; shares sum to 1.
+    private var familyShares: [FamilyShare] {
         let totalTokens = snapshot.tokensByModelBlock.values.reduce(0, +)
         guard totalTokens > 0 else { return [] }
         var tokensByFamily: [String: Int] = [:]
@@ -78,7 +86,7 @@ struct SessionSection: View {
         return tokensByFamily
             .sorted { $0.value > $1.value }
             .map { family, tokens in
-                TrackSegment(
+                FamilyShare(
                     label: family,
                     color: ModelDot.colorForModel(ModelDisplay.idForFamily(family)),
                     share: Double(tokens) / Double(totalTokens)
@@ -97,11 +105,11 @@ struct SessionSection: View {
     }
 
     /// One short centered line under the reset row: dot + family + share %.
-    /// Dollar figures live in the hover tooltip — the gauge above already
-    /// carries the proportions visually.
+    /// This is the *only* place the per-model split is expressed — the gauge
+    /// itself stays single-color. Dollar figures live in the hover tooltip.
     @ViewBuilder
     private var familyLegend: some View {
-        let segments = familySegments
+        let segments = familyShares
         if segments.count > 1 {
             HStack(spacing: 12) {
                 ForEach(segments) { seg in
@@ -140,10 +148,9 @@ struct SessionSection: View {
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.tertiary))
                 }
-                // The used portion is sliced by model family when more than
-                // one is in play — one bar answers "how much" and "who".
-                ProgressTrack(progress: max(0, min(1, five.utilization)),
-                              segments: familySegments)
+                // Single-color gauge — the per-model split is shown as numbers
+                // in the legend row below, not baked into the bar.
+                ProgressTrack(progress: max(0, min(1, five.utilization)))
             } else {
                 // Dual-hero treatment: tokens on the left, dollars on the
                 // right — both at the same display size so neither visually

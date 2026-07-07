@@ -179,71 +179,31 @@ private struct MenuBarCard: View {
     var body: some View {
         Group {
             if showSettings {
-                SettingsView(closeAction: {
-                    withAnimation(.easeInOut(duration: 0.18)) { showSettings = false }
-                })
+                // Instant swap, like the island — no fancy settings animation.
+                SettingsView(closeAction: { showSettings = false })
             } else {
                 stats
             }
         }
-        .padding(18)
+        // Generous inset to match the island card's breathing room.
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
         // One fixed width for both faces (stats and Settings) so the popover
-        // never resizes when you toggle into Settings. 372 is the width the
-        // Settings picker rows + bottom action row need; the stats face just
-        // gets a little more breathing room.
-        .frame(width: 372)
+        // never resizes when you toggle into Settings. 360 fits the Settings
+        // picker rows; the stats face centers within it.
+        .frame(width: 360)
         .background(theme.panelFill)
         .onReceive(Self.displayTick) { now = $0 }
     }
 
     private var stats: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        // Same rhythm as the island's expanded card: 16pt whitespace between
+        // sections (no hairline dividers), the shared SESSION / TODAY blocks,
+        // and the gear living in the header — so the two faces read identically.
+        VStack(alignment: .leading, spacing: 16) {
             header
-            divider
-            // Shared with the island's expanded card — same sections, same
-            // snapshot, so the two faces always agree.
             SessionSection(snapshot: s, now: now)
-            divider
             TodaySection(snapshot: s)
-            divider
-            toolRow
-        }
-    }
-
-    /// Hairline rule between sections — matches the island's expanded card.
-    private var divider: some View {
-        Divider().background(theme.chrome(0.08))
-    }
-
-    /// Bottom utility row — the menu-bar popover has no floating pill to carry
-    /// the gear, so Settings (which is how you switch back to Notch/Free) and
-    /// Quit live here.
-    private var toolRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { showSettings = true }
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(theme.text(.tertiary))
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(theme.chrome(0.08)))
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-            Spacer()
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Text("Quit")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundColor(theme.text(.secondary))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(theme.chrome(0.08)))
-            }
-            .buttonStyle(.plain)
-            .help("Quit VibeNotch")
         }
     }
 
@@ -253,9 +213,13 @@ private struct MenuBarCard: View {
             Text(modelName)
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundColor(theme.text(.primary))
-            Spacer()
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 6)
+            // Live status, single line, immediately left of the gear — the
+            // same cluster the island header uses.
             if s.workState != .idle {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     if s.workState == .working {
                         PulsingDots(color: theme.text(.primary))
                     } else {
@@ -264,8 +228,26 @@ private struct MenuBarCard: View {
                     Text(s.workState == .working ? "Working" : "Waiting")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .foregroundColor(theme.text(.secondary))
+                        .lineLimit(1)
                 }
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
             }
+            // The gear is the menu-bar popover's only way into Settings (which
+            // is how you switch back to Notch / Free), so it lives in the
+            // header exactly like the island's — and Quit lives inside Settings
+            // for both faces.
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(theme.text(.tertiary))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(theme.chrome(0.08)))
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
         }
     }
 

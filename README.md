@@ -4,7 +4,7 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of design and reliability work (current release: 1.9.0). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of design and reliability work (current release: 1.9.1). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
@@ -12,12 +12,12 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.9.0
+## What's new in 1.9.1
 
-- **Centered and compact.** The session % and today's spending now sit centered on the card, and the card sizes itself to what it's showing instead of holding empty space.
-- **One bar, both answers.** Each model's share is drawn right into the session bar in its own color — no separate breakdown block.
+- **The menu-bar pop-up now matches the notch card exactly** — same centered layout, same clean look, the gear up top and Quit tucked into Settings.
+- **A calmer usage bar.** The session bar is one clean color again; which model did what is spelled out in the small line beneath it.
 
-Older versions are in the [changelog](CHANGELOG.md).
+Older versions are in the [CHANGELOG](CHANGELOG.md).
 
 ## First launch — please click "Always Allow"
 

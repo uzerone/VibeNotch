@@ -158,28 +158,14 @@ struct PulsingDots: View {
     }
 }
 
-/// One colored slice of the session gauge — a model family's share of the
-/// used portion. `share` values across a track sum to 1.
-struct TrackSegment: Identifiable, Equatable {
-    let label: String
-    let color: Color
-    let share: Double
-    var id: String { label }
-}
-
 /// HIG-aligned linear progress indicator with gauge-style semantic
 /// coloring: the fill shifts from the cool accent gradient to a warm
 /// amber as utilization climbs past 80% — same rule the iOS Battery
 /// gauge follows. Below 80% reads as "you have headroom", above signals
-/// "approaching limit".
-///
-/// When `segments` carries more than one model family, the used portion is
-/// drawn as stacked family-colored slices — the one bar answers both "how
-/// much" (length) and "which model" (color). The semantic warning fill
-/// always wins past 80%: safety signal over decoration.
+/// "approaching limit". Always a single fill — the per-model split is
+/// expressed as numbers in the legend row, never baked into the bar.
 struct ProgressTrack: View {
     let progress: Double
-    var segments: [TrackSegment] = []
     @Environment(\.ccTheme) private var theme
 
     private var fillColors: [Color] {
@@ -196,37 +182,19 @@ struct ProgressTrack: View {
         return [theme.accentStart, theme.accentEnd]
     }
 
-    private var showsModelSplit: Bool {
-        segments.count > 1 && progress < 0.8
-    }
-
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 // Empty track behind the colored fill.
                 Capsule()
                     .fill(theme.progressTrack)
-                if showsModelSplit {
-                    // Family-colored slices of the used portion. A 2pt floor
-                    // keeps a sliver visible for tiny shares; the total still
-                    // reads correctly at gauge scale.
-                    HStack(spacing: 1) {
-                        ForEach(segments) { seg in
-                            Capsule()
-                                .fill(seg.color)
-                                .frame(width: max(2, geo.size.width * progress * seg.share))
-                        }
-                    }
+                Capsule()
+                    .fill(
+                        LinearGradient(colors: fillColors,
+                                       startPoint: .leading, endPoint: .trailing)
+                    )
+                    .frame(width: max(4, geo.size.width * progress))
                     .animation(.easeInOut(duration: 0.35), value: progress)
-                } else {
-                    Capsule()
-                        .fill(
-                            LinearGradient(colors: fillColors,
-                                           startPoint: .leading, endPoint: .trailing)
-                        )
-                        .frame(width: max(4, geo.size.width * progress))
-                        .animation(.easeInOut(duration: 0.35), value: progress)
-                }
             }
         }
         .frame(height: 6)
