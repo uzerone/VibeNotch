@@ -35,6 +35,8 @@ struct ResetRow: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
+        // No trailing spacer — the row hugs its content so it centers under
+        // the gauge inside the section's centered column.
         HStack(spacing: 5) {
             Image(systemName: "clock")
                 .font(.system(size: 10, weight: .semibold))
@@ -47,7 +49,6 @@ struct ResetRow: View {
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundColor(theme.text(.tertiary))
                 .monospacedDigit()
-            Spacer()
         }
     }
 }
@@ -64,8 +65,66 @@ struct SessionSection: View {
     let now: Date
     @Environment(\.ccTheme) private var theme
 
+    /// Per-model-family slices of this session block, for the in-track split
+    /// and the legend row. Variants of one family (opus-4-6, opus-4-7 …)
+    /// collapse into one slice with the shared family color; shares sum to 1.
+    private var familySegments: [TrackSegment] {
+        let totalTokens = snapshot.tokensByModelBlock.values.reduce(0, +)
+        guard totalTokens > 0 else { return [] }
+        var tokensByFamily: [String: Int] = [:]
+        for (model, tokens) in snapshot.tokensByModelBlock {
+            tokensByFamily[ModelDisplay.familyLabel(for: model), default: 0] += tokens
+        }
+        return tokensByFamily
+            .sorted { $0.value > $1.value }
+            .map { family, tokens in
+                TrackSegment(
+                    label: family,
+                    color: ModelDot.colorForModel(ModelDisplay.idForFamily(family)),
+                    share: Double(tokens) / Double(totalTokens)
+                )
+            }
+    }
+
+    /// Per-family dollar cost, carried in the legend's tooltip so the row
+    /// itself stays one short line.
+    private var costByFamily: [String: Double] {
+        var costs: [String: Double] = [:]
+        for (model, cost) in snapshot.costByModelBlock {
+            costs[ModelDisplay.familyLabel(for: model), default: 0] += cost
+        }
+        return costs
+    }
+
+    /// One short centered line under the reset row: dot + family + share %.
+    /// Dollar figures live in the hover tooltip — the gauge above already
+    /// carries the proportions visually.
+    @ViewBuilder
+    private var familyLegend: some View {
+        let segments = familySegments
+        if segments.count > 1 {
+            HStack(spacing: 12) {
+                ForEach(segments) { seg in
+                    HStack(spacing: 4) {
+                        Circle().fill(seg.color).frame(width: 5, height: 5)
+                        Text("\(seg.label) \(Int((seg.share * 100).rounded()))%")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundColor(theme.text(.tertiary))
+                            .monospacedDigit()
+                    }
+                }
+            }
+            .help(segments.map { seg in
+                let cost = costByFamily[seg.label] ?? 0
+                return String(format: "%@ %d%% · $%.2f", seg.label, Int((seg.share * 100).rounded()), cost)
+            }.joined(separator: "   "))
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Centered column: the notch sits on the screen's center axis, so the
+        // stat blocks mirror that symmetry instead of hugging the left edge.
+        VStack(alignment: .center, spacing: 6) {
             SectionCaption(snapshot.planUsage?.fiveHour != nil ? "SESSION" : "5-HOUR BLOCK")
             if let five = snapshot.planUsage?.fiveHour {
                 // Single hero: the session-used %. TODAY below carries spend,
@@ -80,9 +139,11 @@ struct SessionSection: View {
                     Text("used")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.tertiary))
-                    Spacer()
                 }
-                ProgressTrack(progress: max(0, min(1, five.utilization)))
+                // The used portion is sliced by model family when more than
+                // one is in play — one bar answers "how much" and "who".
+                ProgressTrack(progress: max(0, min(1, five.utilization)),
+                              segments: familySegments)
             } else {
                 // Dual-hero treatment: tokens on the left, dollars on the
                 // right — both at the same display size so neither visually
@@ -90,6 +151,7 @@ struct SessionSection: View {
                 // Dual-hero fallback: 32pt (not the single hero's 40) — two
                 // numbers plus a label must share the ~280pt row, and 40pt
                 // pairs overflow it once the token count grows past 5 glyphs.
+                // Welded and centered like the rest of the stat blocks.
                 HStack(alignment: .lastTextBaseline, spacing: 6) {
                     Text(UsageFormat.tokens(snapshot.tokensBlock))
                         .font(.system(size: 32, weight: .bold, design: .rounded))
@@ -98,7 +160,9 @@ struct SessionSection: View {
                     Text("tokens")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundColor(theme.text(.tertiary))
-                    Spacer()
+                    Text("·")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundColor(theme.text(.quaternary))
                     Text(String(format: "$%.2f", snapshot.costBlock))
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .foregroundColor(theme.text(.primary))
@@ -107,6 +171,10 @@ struct SessionSection: View {
                 ProgressTrack(progress: snapshot.blockProgress(asOf: now))
             }
             ResetRow(snapshot: snapshot, now: now)
+            // Per-model share of this session — replaces the old separate
+            // BY MODEL block; the gauge above carries the same proportions
+            // in color, this row just names them.
+            familyLegend
             // Why the plan-% gauge is missing, when the user can fix it
             // ("token expired — run claude /login"). Only shown while the
             // gauge is actually absent — a transient network blip behind a
@@ -154,11 +222,10 @@ struct TodaySection: View {
     @Environment(\.ccTheme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // Centered like SESSION above — the welded dollars · tokens cluster
+        // sits on the card's center axis, mirroring the notch.
+        VStack(alignment: .center, spacing: 6) {
             SectionCaption("TODAY")
-            // One welded left cluster — dollars · tokens read as a single
-            // fact instead of two edge-anchored islands. Semibold 17 keeps it
-            // clearly subordinate to the 40pt SESSION hero above.
             HStack(alignment: .lastTextBaseline, spacing: 6) {
                 Text(String(format: "$%.2f", snapshot.costToday))
                     .font(.system(size: 17, weight: .semibold, design: .rounded))
@@ -176,8 +243,8 @@ struct TodaySection: View {
                 Text("tokens")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundColor(theme.text(.tertiary))
-                Spacer()
             }
         }
+        .frame(maxWidth: .infinity)
     }
 }

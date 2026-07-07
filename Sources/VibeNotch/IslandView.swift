@@ -94,29 +94,41 @@ struct IslandGeometry: Equatable {
     /// bottom row (login toggle + keychain pill + Quit).
     func expandedSize(dockedUnderNotch: Bool) -> CGSize {
         let topBand = dockedUnderNotch ? notchHeight : 0
-        // 316: the 300pt content budget plus the breathing margins added all
-        // around (top +4, bottom +8) so the roomier insets don't squeeze the
-        // dense state (gauge + weekly + multi-model split) off the card.
-        return CGSize(width: 384, height: topBand + 316)
+        // 232 is the BASE card: margins + header + SESSION (caption, 40pt
+        // hero, track, reset row) + TODAY. Optional blocks add their own
+        // height on top (see the extra-height constants below) so the card
+        // hugs its content instead of reserving dead space for sections
+        // that aren't showing.
+        return CGSize(width: 384, height: topBand + 232)
     }
 
     /// Convenience for the docked default.
     var expandedSize: CGSize { expandedSize(dockedUnderNotch: hasPhysicalNotch) }
 
-    /// Extra card height when the plan-fetch hint row is visible — the one
-    /// optional row added after the 300pt base height was tuned. Without
-    /// this, the hint pushed the model-split bar past the card's bottom edge,
-    /// where the mask clipped it in half.
+    /// Extra card height per optional row, so the silhouette hugs whatever
+    /// is actually showing:
+    /// • plan-fetch hint (orange row in SESSION)
+    /// • weekly gauge row (7-day ≥ 50%)
+    /// • per-model legend under the session track (> 1 model family)
+    /// The Settings face has its own fixed height — its content doesn't vary.
     static let planHintExtraHeight: CGFloat = 22
+    static let weeklyExtraHeight: CGFloat = 19
+    static let modelLegendExtraHeight: CGFloat = 17
+    static let settingsFaceHeight: CGFloat = 270
 
-    /// Fixed window size — the tallest possible card (expanded + hint row)
-    /// plus a little slack. The window is transparent and click-through
-    /// outside the pill rect, so oversizing the canvas costs nothing; the
-    /// drawn card sizes itself within it. Used by AppDelegate for the window
-    /// and by the view as the outer bound when publishing the hit rect.
+    /// Fixed window size — the tallest possible card (every optional row at
+    /// once, or the Settings face if taller) plus a little slack. The window
+    /// is transparent and click-through outside the pill rect, so oversizing
+    /// the canvas costs nothing; the drawn card sizes itself within it. Used
+    /// by AppDelegate for the window and by the view as the outer bound when
+    /// publishing the hit rect.
     var canvasSize: CGSize {
         let s = expandedSize
-        return CGSize(width: s.width, height: s.height + Self.planHintExtraHeight + 8)
+        let maxExtras = max(
+            Self.planHintExtraHeight + Self.weeklyExtraHeight + Self.modelLegendExtraHeight,
+            Self.settingsFaceHeight - 232
+        )
+        return CGSize(width: s.width, height: s.height + maxExtras + 8)
     }
 
     /// Corner radius for the expanded card — fixed, modern rounded-rect feel
@@ -314,11 +326,25 @@ struct IslandView: View {
             && monitor.snapshot.planUsageHint != nil
     }
 
+    /// Whether SessionSection is currently rendering its weekly gauge row —
+    /// must mirror that view's own `>= 0.5` threshold so the card grows with it.
+    private var showsWeeklyRow: Bool {
+        (monitor.snapshot.planUsage?.sevenDay?.utilization ?? 0) >= 0.5
+    }
+
     private var size: CGSize {
         let docked = geometry.hasPhysicalNotch && !isFreeMove
         if expanded {
             var s = geometry.expandedSize(dockedUnderNotch: docked)
+            if showSettings {
+                // Settings has fixed content — one fixed face height.
+                s.height = (docked ? geometry.notchHeight : 0) + IslandGeometry.settingsFaceHeight
+                return s
+            }
+            // Stats face hugs its content: optional rows add their height.
             if showsPlanHint { s.height += IslandGeometry.planHintExtraHeight }
+            if showsWeeklyRow { s.height += IslandGeometry.weeklyExtraHeight }
+            if modelSplitWorthShowing { s.height += IslandGeometry.modelLegendExtraHeight }
             return s
         }
         if hasDropdownState { return geometry.activeSize }
@@ -496,9 +522,12 @@ struct IslandView: View {
         .animation(uiSpring, value: monitor.snapshot.currentModelTraits.fastMode)
         .animation(uiSpring, value: monitor.snapshot.activeSessions)
         .animation(uiSpring, value: hideLightsForActiveState)
-        // The hint row growing/shrinking the expanded card interpolates
-        // through the same spring instead of snapping.
+        // Optional rows growing/shrinking the expanded card interpolate
+        // through the springs instead of snapping — the silhouette morphs
+        // with each row that appears (hint, weekly gauge, model legend).
         .animation(uiSpring, value: showsPlanHint)
+        .animation(surfaceSpring, value: showsWeeklyRow)
+        .animation(surfaceSpring, value: modelSplitWorthShowing)
     }
 
     /// Publishes the visible pill rect in NSHostingView coordinates so the
@@ -817,19 +846,17 @@ struct IslandView: View {
             .frame(width: 2, height: 2)
     }
 
-    /// The model split is only informative when more than one family is in
-    /// play. A single-model session is the common case and the split bar just
-    /// restates "100% Opus" — drop it so the card breathes.
+    /// True when more than one model family has tokens in this session block —
+    /// SessionSection then shows its per-family legend row (and slices the
+    /// gauge), so the card must grow by `modelLegendExtraHeight`. Mirrors the
+    /// family aggregation SessionSection itself performs.
     private var modelSplitWorthShowing: Bool {
-        modelSplitSegments.count > 1
-    }
-
-    /// Hairline rule between sections — same faint chrome line the Settings
-    /// panel uses, so a divided card reads consistently with the rest of the UI.
-    /// The one remaining rule — a fainter line than before, used only above
-    /// the BY MODEL block (a different content class than the metric column).
-    private var sectionDivider: some View {
-        Divider().background(theme.chrome(0.06))
+        var families = Set<String>()
+        for (model, tokens) in monitor.snapshot.tokensByModelBlock where tokens > 0 {
+            families.insert(ModelDisplay.familyLabel(for: model))
+            if families.count > 1 { return true }
+        }
+        return false
     }
 
     private var expandedContent: some View {
@@ -910,48 +937,13 @@ struct IslandView: View {
             // SESSION and TODAY are the shared card sections — the same
             // views the menu-bar popover renders, so the two faces always
             // agree on layout and numbers. No hairlines between them: the
-            // 16pt root rhythm is the separator.
+            // 16pt root rhythm is the separator. The per-model split lives
+            // *inside* SESSION now — the gauge's used portion is sliced by
+            // family color, with a one-line legend — so there's no separate
+            // BY MODEL block anymore.
             SessionSection(snapshot: monitor.snapshot, now: now)
 
             TodaySection(snapshot: monitor.snapshot)
-
-            // Per-model split — only when more than one model is actually in
-            // play. A single-model session would just say "100% Opus", which
-            // the header dot already tells you; showing it anyway was clutter.
-            // The divider lives inside the condition so it never strands above
-            // an absent section.
-            if modelSplitWorthShowing {
-                sectionDivider
-                ModelSplitBar(title: "BY MODEL", segments: modelSplitSegments)
-                    .help("Current session's usage split by model")
-            }
         }
-    }
-
-/// Color-coded segments scoped to the current 5h session block. Token
-    /// totals drive the bar widths; cost is carried so the legend can show
-    /// "$X" per model. Variants of one family (opus-4-6, opus-4-7, etc.)
-    /// collapse into one segment with the shared family color.
-    private var modelSplitSegments: [ModelSplitBar.Segment] {
-        let totalTokens = monitor.snapshot.tokensByModelBlock.values.reduce(0, +)
-        guard totalTokens > 0 else { return [] }
-        var tokensByFamily: [String: Int] = [:]
-        var costByFamily: [String: Double] = [:]
-        for (model, tokens) in monitor.snapshot.tokensByModelBlock {
-            tokensByFamily[ModelDisplay.familyLabel(for: model), default: 0] += tokens
-        }
-        for (model, cost) in monitor.snapshot.costByModelBlock {
-            costByFamily[ModelDisplay.familyLabel(for: model), default: 0] += cost
-        }
-        return tokensByFamily
-            .sorted { $0.value > $1.value }
-            .map { (family, tokens) in
-                ModelSplitBar.Segment(
-                    label: family,
-                    fraction: Double(tokens) / Double(totalTokens),
-                    cost: costByFamily[family] ?? 0,
-                    color: ModelDot.colorForModel(ModelDisplay.idForFamily(family))
-                )
-            }
     }
 }

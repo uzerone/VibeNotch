@@ -158,13 +158,28 @@ struct PulsingDots: View {
     }
 }
 
+/// One colored slice of the session gauge — a model family's share of the
+/// used portion. `share` values across a track sum to 1.
+struct TrackSegment: Identifiable, Equatable {
+    let label: String
+    let color: Color
+    let share: Double
+    var id: String { label }
+}
+
 /// HIG-aligned linear progress indicator with gauge-style semantic
 /// coloring: the fill shifts from the cool accent gradient to a warm
 /// amber as utilization climbs past 80% — same rule the iOS Battery
 /// gauge follows. Below 80% reads as "you have headroom", above signals
 /// "approaching limit".
+///
+/// When `segments` carries more than one model family, the used portion is
+/// drawn as stacked family-colored slices — the one bar answers both "how
+/// much" (length) and "which model" (color). The semantic warning fill
+/// always wins past 80%: safety signal over decoration.
 struct ProgressTrack: View {
     let progress: Double
+    var segments: [TrackSegment] = []
     @Environment(\.ccTheme) private var theme
 
     private var fillColors: [Color] {
@@ -181,113 +196,40 @@ struct ProgressTrack: View {
         return [theme.accentStart, theme.accentEnd]
     }
 
+    private var showsModelSplit: Bool {
+        segments.count > 1 && progress < 0.8
+    }
+
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 // Empty track behind the colored fill.
                 Capsule()
                     .fill(theme.progressTrack)
-                Capsule()
-                    .fill(
-                        LinearGradient(colors: fillColors,
-                                       startPoint: .leading, endPoint: .trailing)
-                    )
-                    .frame(width: max(4, geo.size.width * progress))
+                if showsModelSplit {
+                    // Family-colored slices of the used portion. A 2pt floor
+                    // keeps a sliver visible for tiny shares; the total still
+                    // reads correctly at gauge scale.
+                    HStack(spacing: 1) {
+                        ForEach(segments) { seg in
+                            Capsule()
+                                .fill(seg.color)
+                                .frame(width: max(2, geo.size.width * progress * seg.share))
+                        }
+                    }
                     .animation(.easeInOut(duration: 0.35), value: progress)
+                } else {
+                    Capsule()
+                        .fill(
+                            LinearGradient(colors: fillColors,
+                                           startPoint: .leading, endPoint: .trailing)
+                        )
+                        .frame(width: max(4, geo.size.width * progress))
+                        .animation(.easeInOut(duration: 0.35), value: progress)
+                }
             }
         }
         .frame(height: 6)
     }
 }
 
-/// Horizontal stacked bar showing per-model usage. Each segment is
-/// colored by its `ModelDot` family color; the legend shows name +
-/// percentage + dollar cost so users can tell at a glance which model
-/// is doing the work AND which is doing the spending (Opus ≈ 5× Sonnet).
-struct ModelSplitBar: View {
-    struct Segment: Identifiable {
-        let label: String
-        let fraction: Double
-        let cost: Double
-        let color: Color
-        var id: String { label }
-    }
-    let title: String
-    let segments: [Segment]
-
-    /// Lays out segment widths so the bar never overflows its track. The naïve
-    /// `width * fraction` overflows once the (n-1) inter-segment gaps and the
-    /// per-segment minimum are added in. Here we lay out within the width that
-    /// remains after spacing, apply a `minWidth` floor, then rescale the result
-    /// down if the floors pushed the total back over budget.
-    static func segmentWidths(fractions: [Double],
-                              available: CGFloat,
-                              spacing: CGFloat,
-                              minWidth: CGFloat = 2) -> [CGFloat] {
-        guard !fractions.isEmpty else { return [] }
-        let usable = max(0, available - spacing * CGFloat(fractions.count - 1))
-        let total = fractions.reduce(0, +)
-        // Distribute `usable` by fraction, flooring each at `minWidth`.
-        var widths = fractions.map { f -> CGFloat in
-            let raw = total > 0 ? usable * CGFloat(f / total) : usable / CGFloat(fractions.count)
-            return max(minWidth, raw)
-        }
-        // The floors can push the sum back over `usable`; rescale to fit.
-        let sum = widths.reduce(0, +)
-        if sum > usable, sum > 0 {
-            let scale = usable / sum
-            widths = widths.map { $0 * scale }
-        }
-        return widths
-    }
-
-    @Environment(\.ccTheme) private var theme
-
-    var body: some View {
-        // De-crammed three-row layout: caption alone, then the bar, then the
-        // legend on its own left-origin row. Nothing right-justified into the
-        // card edge, so cost figures never kiss the border, and the bar gets
-        // real air instead of being pinched under a crowded title line.
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .tracking(0.8)
-                .foregroundColor(theme.text(.tertiary))
-            GeometryReader { geo in
-                let spacing: CGFloat = 1
-                let widths = Self.segmentWidths(
-                    fractions: segments.map(\.fraction),
-                    available: geo.size.width,
-                    spacing: spacing)
-                HStack(spacing: spacing) {
-                    ForEach(Array(segments.enumerated()), id: \.element.id) { idx, seg in
-                        Capsule()
-                            .fill(seg.color)
-                            .frame(width: widths[idx])
-                    }
-                }
-            }
-            .frame(height: 6)
-            // Legend below the bar: dot + name + percent + cost per segment,
-            // anchored left with the trailing spacer eating the empty width.
-            HStack(spacing: 14) {
-                ForEach(segments) { seg in
-                    HStack(spacing: 4) {
-                        Circle().fill(seg.color).frame(width: 6, height: 6)
-                        Text("\(seg.label) \(Int((seg.fraction * 100).rounded()))%")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundColor(theme.text(.secondary))
-                            .monospacedDigit()
-                        if seg.cost > 0 {
-                            Text(String(format: "$%.2f", seg.cost))
-                                .font(.system(size: 9, weight: .medium, design: .rounded))
-                                .foregroundColor(theme.text(.tertiary))
-                                .monospacedDigit()
-                        }
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-        }
-    }
-}
