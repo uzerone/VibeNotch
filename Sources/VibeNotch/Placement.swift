@@ -57,6 +57,30 @@ final class PlacementStore: ObservableObject {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }
     }
 
+    /// Whether the Mac's built-in (notched) display is currently present —
+    /// i.e. the lid is open. AppDelegate refreshes this from `NSScreen` on
+    /// launch and whenever the screen configuration changes (lid open/close,
+    /// display connect/disconnect). When false (lid closed / clamshell), the
+    /// notch is physically gone, so `.notch` placement is neither offered nor
+    /// allowed — only Menu and Free remain, defaulting to Menu.
+    @Published var notchAvailable: Bool = true {
+        didSet {
+            // Lid just closed while docked to the notch: there's no camera
+            // housing to anchor to anymore, so fall back to the menu-bar item
+            // (the requested clamshell default) rather than stranding the pill.
+            if !notchAvailable && mode == .notch {
+                mode = .menuBar
+            }
+        }
+    }
+
+    /// Placement modes offered in Settings, given the current lid state.
+    /// Lid open: all three. Lid closed: Menu + Free only (no notch to dock to).
+    /// Order matches `Placement.allCases` so the segmented control is stable.
+    var availablePlacements: [Placement] {
+        notchAvailable ? Placement.allCases : [.menuBar, .freeMove]
+    }
+
     /// Last window origin (bottom-left, screen coords) in free-move mode.
     /// `nil` until the user moves the window at least once; AppDelegate
     /// falls back to screen-center on first switch.

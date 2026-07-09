@@ -152,11 +152,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Publish whether the built-in (notched) display is currently attached —
+    /// i.e. the lid is open. Drives which placement modes Settings offers and
+    /// forces `.menuBar` when the lid closes on a notch-docked pill. Setting a
+    /// value equal to the current one is a no-op for `@Published`, so calling
+    /// this on every screen-parameter change is cheap.
+    private func refreshNotchAvailability() {
+        PlacementStore.shared.notchAvailable = NSScreen.screens.contains { $0.isBuiltIn }
+    }
+
     /// Branches on the user's placement mode. `.notch` re-runs the
     /// screen-anchoring rules; `.freeMove` skips screen selection and
     /// restores the user's saved origin (or centers on first switch).
     private func applyPlacement(initial: Bool) {
         guard let win = window else { return }
+        // Refresh lid state first. If the lid just closed while in `.notch`,
+        // PlacementStore's `notchAvailable` didSet snaps `mode` to `.menuBar`
+        // (firing the $mode subscriber to re-run this), so read `mode` only
+        // after this line to act on the corrected value.
+        refreshNotchAvailability()
         // The menu-bar item only exists in `.menuBar`; tear it down whenever
         // we're in any other mode so switching back to the pill is clean.
         if PlacementStore.shared.mode != .menuBar {

@@ -2,6 +2,10 @@
 
 All notable changes to VibeNotch, newest first. The latest release is also summarized in the [README](README.md).
 
+## Version 1.9.2
+
+- **Closing your MacBook lid just works.** When you close the lid (with an external monitor plugged in), there's no notch to hang the pill on — so VibeNotch now offers only Menu and Free placements and automatically slides into the menu bar. Open the lid and the Notch option comes right back.
+
 ## Version 1.9.1
 
 - **The menu-bar pop-up now matches the notch card exactly** — same centered layout, same clean look, the gear up top and Quit tucked into Settings.

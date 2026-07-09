@@ -41,8 +41,11 @@ struct SettingsView: View {
             // Placement: anchored under the notch, free-floating, or menu bar.
             VStack(alignment: .leading, spacing: 6) {
                 SectionCaption("PLACEMENT")
+                // Lid closed → no notch to dock to, so only Menu + Free are
+                // offered (see `availablePlacements`). Reading it here keeps
+                // the control live: it re-renders when the lid opens/closes.
                 SegmentedRow(
-                    options: Placement.allCases,
+                    options: placement.availablePlacements,
                     isSelected: { placement.mode == $0 },
                     select: { placement.mode = $0 },
                     theme: theme
