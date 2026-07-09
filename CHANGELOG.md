@@ -2,6 +2,10 @@
 
 All notable changes to VibeNotch, newest first. The latest release is also summarized in the [README](README.md).
 
+## Version 1.9.3
+
+- **"Always Allow" finally sticks.** Updating VibeNotch no longer brings back the Claude-login permission pop-up every time. Grant it once and you're done — future updates stay authorized. (The app was accidentally re-signing itself with a new identity on each build, which made your Mac forget the permission. Now it signs with one stable identity.)
+
 ## Version 1.9.2
 
 - **Closing your MacBook lid just works.** When you close the lid (with an external monitor plugged in), there's no notch to hang the pill on — so VibeNotch now offers only Menu and Free placements and automatically slides into the menu bar. Open the lid and the Notch option comes right back.

@@ -4,7 +4,7 @@
 
 <h1 align="center">VibeNotch</h1>
 
-> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of design and reliability work (current release: 1.9.2). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
+> **Status — stabilizing.** VibeNotch is a personal-scale project that's settling down after a round of design and reliability work (current release: 1.9.3). It's comfortable for daily use; a few rough edges remain and details may still shift between releases, so treat the billing figures as a close guide rather than the final word. Use it, and file issues.
 
 A Dynamic-Island-style monitor for your AI coding agents — [Claude Code](https://claude.com/claude-code) and [OpenAI Codex](https://openai.com/codex) — pinned to the MacBook Pro notch.
 
@@ -12,9 +12,9 @@ Hidden when idle. Drops down a status line while Claude or Codex is running. Hov
 
 Requires macOS 13+. **No pre-built binary** — build from source with the scripts in [Build](#build) below. The DMG output lands at the project root.
 
-## What's new in 1.9.2
+## What's new in 1.9.3
 
-- **Closing your MacBook lid just works.** When you close the lid (with an external monitor plugged in), there's no notch to hang the pill on — so VibeNotch now offers only Menu and Free placements and automatically slides into the menu bar. Open the lid and the Notch option comes right back.
+- **"Always Allow" finally sticks.** Updating VibeNotch no longer brings back the Claude-login permission pop-up every time — grant it once and future updates stay authorized. (Each build was accidentally re-signing the app with a new identity, so your Mac kept forgetting the permission; it now signs with one stable identity.)
 
 Older versions are in the [CHANGELOG](CHANGELOG.md).
 
