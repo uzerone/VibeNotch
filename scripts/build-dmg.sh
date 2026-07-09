@@ -86,14 +86,31 @@ PLIST
 # stable across rebuilds so "Always Allow" persists. Falls back to ad-hoc
 # when the identity isn't installed (first build / contributors).
 #
+# We look the identity up by NAME and sign by its SHA-1 FINGERPRINT rather
+# than gating on `find-identity -p codesigning`. The self-signed cert from
+# setup-signing-identity.sh is intentionally NOT Gatekeeper-trusted, so the
+# `-p codesigning` policy filter hides it (returns "0 valid identities") even
+# though `codesign` signs with it perfectly well. Filtering by policy here was
+# the actual bug: it silently fell through to ad-hoc signing, whose hash
+# changes every build, which reset the Keychain "Always Allow" every rebuild.
+#
 # Override the identity name with VIBENOTCH_SIGN_IDENTITY in the environment.
 # Run ./scripts/setup-signing-identity.sh once to install the default.
 SIGN_IDENTITY="${VIBENOTCH_SIGN_IDENTITY:-VibeNotch Self-Signed}"
-if security find-identity -p codesigning 2>/dev/null | grep -F "$SIGN_IDENTITY" >/dev/null; then
-    echo "==> Codesigning with '$SIGN_IDENTITY'"
-    codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR" >/dev/null
+# Grab the SHA-1 hash of the first cert whose name matches. Use bare
+# `find-identity` with NO flags: `-p codesigning` filters by Gatekeeper
+# policy and `-v` filters by validity — BOTH hide our self-signed cert
+# (it reports CSSMERR_TP_NOT_TRUSTED) even though codesign signs with it
+# fine. `|| true` keeps `set -e` from aborting when the grep finds nothing.
+SIGN_HASH="$(security find-identity 2>/dev/null \
+    | grep -F "\"$SIGN_IDENTITY\"" \
+    | head -1 \
+    | awk '{print $2}' || true)"
+if [ -n "$SIGN_HASH" ]; then
+    echo "==> Codesigning with '$SIGN_IDENTITY' ($SIGN_HASH)"
+    codesign --force --deep --sign "$SIGN_HASH" "$APP_DIR" >/dev/null
 else
-    echo "==> Ad-hoc codesigning (no stable identity — run scripts/setup-signing-identity.sh to fix the keychain re-prompt)"
+    echo "==> Ad-hoc codesigning (no '$SIGN_IDENTITY' cert — run scripts/setup-signing-identity.sh to fix the keychain re-prompt)"
     codesign --force --deep --sign - "$APP_DIR" >/dev/null
 fi
 
